@@ -1,6 +1,6 @@
 import os
 import json
-from flask import Flask, request
+from flask import Flask, request , render_template
 import ccxt
 from ccxt import binance, bybit
 
