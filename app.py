@@ -17,6 +17,14 @@ binance_exchange = ccxt.binance({
     'enableRateLimit': True,
     'options': {
         'defaultType': 'future',
+    },
+    'urls': {
+        'api': {
+            'public': 'https://testnet.binance.vision/api',
+            'private': 'https://testnet.binance.vision/api',
+            'fapiPublic': 'https://testnet.binancefuture.com/fapi',
+            'fapiPrivate': 'https://testnet.binancefuture.com/fapi'
+        }
     }
 })
 
@@ -37,6 +45,18 @@ def get_future_balance(exchange, symbol):
 
     base_currency = symbol.split("/")[0]
     return balance['free'][base_currency]
+
+@app.route('/')
+def home():
+    return render_template('index.html')
+
+@app.errorhandler(404)
+def page_not_found(e):
+    return render_template('404.html'), 404
+
+@app.errorhandler(500)
+def internal_server_error(e):
+    return render_template('500.html'), 500
 
 @app.route('/webhook', methods=['POST'])
 def webhook():
