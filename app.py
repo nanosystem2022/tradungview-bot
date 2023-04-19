@@ -1,85 +1,76 @@
+import os
 import json
 from flask import Flask, request
-from pybit import HTTP
 import ccxt
-from binanceFutures import handle_binance_request
-from bybit_handler import handle_bybit_request
+from ccxt import binance, bybit
 
 app = Flask(__name__)
 
-# load config.json
-with open('config.json') as config_file:
-    config = json.load(config_file)
+position_open = False
 
-use_bybit = config['EXCHANGES']['BYBIT']['ENABLED']
-if use_bybit:
-    session = HTTP(
-        endpoint='https://api.bybit.com',
-        api_key=config['EXCHANGES']['BYBIT']['API_KEY'],
-        api_secret=config['EXCHANGES']['BYBIT']['API_SECRET']
-    )
+with open("config.json") as file:
+    config = json.load(file)
 
-use_binance_futures = config['EXCHANGES']['BINANCE-FUTURES']['ENABLED']
-if use_binance_futures:
-    exchange = ccxt.binance({
-        'apiKey': config['EXCHANGES']['BINANCE-FUTURES']['API_KEY'],
-        'secret': config['EXCHANGES']['BINANCE-FUTURES']['API_SECRET'],
-        'options': {
-            'defaultType': 'future',
-        },
-    })
-    if config['EXCHANGES']['BINANCE-FUTURES']['TESTNET']:
-        exchange.set_sandbox_mode(True)
+binance_exchange = ccxt.binance({
+    'apiKey': config['EXCHANGES']['binanceusdm']['API_KEY'],
+    'secret': config['EXCHANGES']['binanceusdm']['API_SECRET'],
+    'enableRateLimit': True,
+    'options': {
+        'defaultType': 'future',
+    }
+})
 
-@app.route('/')
-def index():
-    return {'message': 'Server is running!'}
+bybit_exchange = ccxt.bybit({
+    'apiKey': config['EXCHANGES']['BYBIT']['API_KEY'],
+    'secret': config['EXCHANGES']['BYBIT']['API_SECRET'],
+    'enableRateLimit': True,
+})
+
+if config['EXCHANGES']['binanceusdm']['TESTNET']:
+    binance_exchange.set_sandbox_mode(True)
+
+def get_future_balance(exchange, symbol):
+    if exchange == "binance":
+        balance = binance_exchange.fetch_balance({'type': 'future'})
+    elif exchange == "bybit":
+        balance = bybit_exchange.fetch_wallet_balance()
+
+    base_currency = symbol.split("/")[0]
+    return balance['free'][base_currency]
 
 @app.route('/webhook', methods=['POST'])
 def webhook():
-    print("Hook Received!")
+    global position_open
     data = json.loads(request.data)
-    print(data)
+    signal = data['signal']
+    symbol = data['symbol']
+    exchanges = data['exchanges']
 
-    if int(data['key']) != config['KEY']:
-        print("Invalid Key, Please Try Again!")
-        return {
-            "status": "error",
-            "message": "Invalid Key, Please Try Again!"
-        }
+    amount_binance = get_future_balance('binance', symbol)
+    amount_bybit = get_future_balance('bybit', symbol)
 
-    if data['exchange'] == 'bybit':
-        if use_bybit:
-            handle_bybit_request(session, data)
-            return {
-                "status": "success",
-                "message": "Bybit Webhook Received!"
-            }
+    responses = []
+
+    if signal == 'closeshort' or signal == 'closelong':
+        if position_open:
+            position_open = False
+            if 'binance' in exchanges:
+                responses.append(binance_exchange.create_market_order(symbol, signal.replace("close", ""), amount_binance))
+            if 'bybit' in exchanges:
+                responses.append(bybit_exchange.create_market_order(symbol, signal.replace("close", ""), amount_bybit))
         else:
-            return {
-                "status": "error",
-                "message": "Bybit is not enabled in the configuration."
-            }
-
-    if data['exchange'] == 'binance-futures':
-        if use_binance_futures:
-            handle_binance_request(exchange, data)
-            return {
-                "status": "success",
-                "message": "Binance Futures Webhook Received!"
-            }
+            responses.append("هیچ معامله‌ای برای بستن وجود ندارد.")
+    elif signal == 'buy' or signal == 'sell':
+        if position_open:
+            responses.append("یک معامله در حال حاضر باز است. لطفاً ابتدا معامله فعلی را ببندید.")
         else:
-            return {
-                "status": "error",
-                "message": "Binance Futures is not enabled in the configuration."
-            }
+            position_open = True
+            if 'binance' in exchanges:
+                responses.append(binance_exchange.create_market_order(symbol, signal, amount_binance))
+            if 'bybit' in exchanges:
+                responses.append(bybit_exchange.create_market_order(symbol, signal, amount_bybit))
 
-    else:
-        print("Invalid Exchange, Please Try Again!")
-        return {
-            "status": "error",
-            "message": "Invalid Exchange, Please Try Again!"
-        }
+    return str(responses)
 
 if __name__ == '__main__':
-    app.run(debug=False)
+    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 8080)))
