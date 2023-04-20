@@ -1,100 +1,86 @@
 import os
 import json
-from flask import Flask, request , render_template
+from flask import Flask, request, render_template
 import ccxt
-from ccxt import binance, bybit
 
 app = Flask(__name__)
 
-position_open = False
+# خواندن تنظیمات از فایل config.json
+with open("config.json") as config_file:
+    config = json.load(config_file)
 
-with open("config.json") as file:
-    config = json.load(file)
+# ایجاد نمونه‌های ccxt برای صرافی‌ها
+exchanges = {}
+open_orders = {}
+for exchange_name, exchange_config in config["EXCHANGES"].items():
+    if exchange_config["ENABLED"]:
+        params = {}
+        if exchange_name.lower() == "binance" and exchange_config["TESTNET"]:
+            params = {
+                'options': {'defaultMarket': 'future'},
+                'rateLimit': 200,
+                'enableRateLimit': True,
+                'urls': {
+                    'api': {
+                        'public': 'https://testnet.binancefuture.com/fapi/v1',
+                        'private': 'https://testnet.binancefuture.com/fapi/v1',
+                        'v2Public': 'https://testnet.binancefuture.com/fapi/v2',
+                        'v2Private': 'https://testnet.binancefuture.com/fapi/v2'
+                    }
+                }
+            }
+        exchanges[exchange_name.lower()] = getattr(ccxt, exchange_name.lower())({
+            'apiKey': exchange_config["API_KEY"],
+            'secret': exchange_config["API_SECRET"],
+            **params
+        })
+        open_orders[exchange_name.lower()] = None
 
-binance_exchange = ccxt.binance({
-    'apiKey': config['EXCHANGES']['binanceusdm']['API_KEY'],
-    'secret': config['EXCHANGES']['binanceusdm']['API_SECRET'],
-    'enableRateLimit': True,
-    'options': {
-        'defaultType': 'future',
-    },
-    'urls': {
-        'api': {
-            'public': 'https://testnet.binance.vision/api',
-            'private': 'https://testnet.binance.vision/api',
-            'fapiPublic': 'https://testnet.binancefuture.com/fapi',
-            'fapiPrivate': 'https://testnet.binancefuture.com/fapi'
-        }
-    }
-})
-
-bybit_exchange = ccxt.bybit({
-    'apiKey': config['EXCHANGES']['BYBIT']['API_KEY'],
-    'secret': config['EXCHANGES']['BYBIT']['API_SECRET'],
-    'enableRateLimit': True,
-})
-
-if config['EXCHANGES']['binanceusdm']['TESTNET']:
-    binance_exchange.set_sandbox_mode(True)
-
-def get_future_balance(exchange, symbol):
-    if exchange == "binance":
-        balance = binance_exchange.fetch_balance({'type': 'future'})
-    elif exchange == "bybit":
-        balance = bybit_exchange.fetch_wallet_balance()
-
-    base_currency = symbol.split("/")[0]
-    return balance['free'][base_currency]
-
-@app.route('/')
-def home():
-    return render_template('index.html')
-
-@app.errorhandler(404)
-def page_not_found(e):
-    return render_template('404.html'), 404
-
-@app.errorhandler(405)
-def page_not_found(e):
-    return render_template('405.html'), 405
-
-@app.errorhandler(500)
-def internal_server_error(e):
-    return render_template('500.html'), 500
+def get_usdt_balance(exchange):
+    balance = exchange.fetch_balance(params={"type": "future"})
+    usdt_balance = balance.get('USDT', {}).get('free', 0)
+    return usdt_balance
 
 @app.route('/webhook', methods=['POST'])
 def webhook():
-    global position_open
-    data = json.loads(request.data)
-    signal = data['signal']
-    symbol = data['symbol']
-    exchanges = data['exchanges']
+    data = request.get_json()
+    
+    # پردازش سیگنال‌های تریدینگ ویو
+    exchange = data['exchange']
+    command = data.get('command', 'open')
+    
+    if exchange in exchanges:
+        if command in ['closelong', 'closeshort']:
+            if open_orders[exchange] is not None:
+                order_id = open_orders[exchange]
+                exchanges[exchange].cancel_order(order_id)
+                open_orders[exchange] = None
+                return f"معامله {order_id} بسته شد"
+            else:
+                return "هیچ معامله‌ای برای بستن وجود ندارد"
+        elif command == 'open':
+            if open_orders[exchange] is None:
+                symbol = data['symbol']
+                side = data['side']
+                amount = get_usdt_balance(exchanges[exchange])
+                order = exchanges[exchange].create_market_order(side, symbol, amount)
+                open_orders[exchange] = order['id']
+                return f"معامله باز شده: {order}"
+            else:
+                return "معامله‌ای در حال انجام است. لطفا قبل از باز کردن معامله جدید، معامله قبلی را ببندید"
+    else:
+        return "صرافی نامعتبر است"
 
-    amount_binance = get_future_balance('binance', symbol)
-    amount_bybit = get_future_balance('bybit', symbol)
+# این تابع خطای 404 را مدیریت می‌کند
+@app.errorhandler(404)
+def not_found_error(error):
+    return render_template('404.html'), 404
 
-    responses = []
-
-    if signal == 'closeshort' or signal == 'closelong':
-        if position_open:
-            position_open = False
-            if 'binance' in exchanges:
-                responses.append(binance_exchange.create_market_order(symbol, signal.replace("close", ""), amount_binance))
-            if 'bybit' in exchanges:
-                responses.append(bybit_exchange.create_market_order(symbol, signal.replace("close", ""), amount_bybit))
-        else:
-            responses.append("هیچ معامله‌ای برای بستن وجود ندارد.")
-    elif signal == 'buy' or signal == 'sell':
-        if position_open:
-            responses.append("یک معامله در حال حاضر باز است. لطفاً ابتدا معامله فعلی را ببندید.")
-        else:
-            position_open = True
-            if 'binance' in exchanges:
-                responses.append(binance_exchange.create_market_order(symbol, signal, amount_binance))
-            if 'bybit' in exchanges:
-                responses.append(bybit_exchange.create_market_order(symbol, signal, amount_bybit))
-
-    return str(responses)
+# این تابع خطای 500 را مدیریت می‌کند
+@app.errorhandler(500)
+def internal_error(error):
+    # اینجا می‌توانید کدی برای ثبت خطا در سیستم خود اضافه کنید
+    return render_template('500.html'), 500
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 8080)))
+    app.run()
