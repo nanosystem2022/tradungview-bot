@@ -1,97 +1,177 @@
-import os
 import json
-from flask import Flask, request , render_template
+from flask import Flask, render_template, request, jsonify
+from pybit import HTTP
+import time
 import ccxt
-from ccxt import binance, bybit
+from binanceFutures import Bot
+
 
 app = Flask(__name__)
 
-position_open = False
+# load config.json
+with open('config.json') as config_file:
+    config = json.load(config_file)
 
-with open("config.json") as file:
-    config = json.load(file)
 
-binance_exchange = ccxt.binance({
-    'apiKey': config['EXCHANGES']['binanceusdm']['API_KEY'],
-    'secret': config['EXCHANGES']['binanceusdm']['API_SECRET'],
-    'enableRateLimit': True,
-    'options': {
-        'defaultType': 'future',
-    },
-    'urls': {
-        'api': {
-            'public': 'https://testnet.binance.vision/api',
-            'private': 'https://testnet.binance.vision/api',
-            'fapiPublic': 'https://testnet.binancefuture.com/fapi',
-            'fapiPrivate': 'https://testnet.binancefuture.com/fapi'
-        }
-    }
-})
+###############################################################################
+#
+#             This Section is for Exchange Validation
+#
+###############################################################################
 
-bybit_exchange = ccxt.bybit({
-    'apiKey': config['EXCHANGES']['BYBIT']['API_KEY'],
-    'secret': config['EXCHANGES']['BYBIT']['API_SECRET'],
-    'enableRateLimit': True,
-})
+use_bybit = False
+if 'BYBIT' in config['EXCHANGES']:
+    if config['EXCHANGES']['BYBIT']['ENABLED']:
+        print("Bybit is enabled!")
+        use_bybit = True
 
-if config['EXCHANGES']['binanceusdm']['TESTNET']:
-    binance_exchange.set_sandbox_mode(True)
+    session = HTTP(
+        endpoint='https://api.bybit.com',
+        api_key=config['EXCHANGES']['BYBIT']['API_KEY'],
+        api_secret=config['EXCHANGES']['BYBIT']['API_SECRET']
+    )
 
-def get_future_balance(exchange, symbol):
-    if exchange == "binance":
-        balance = binance_exchange.fetch_balance({'type': 'future'})
-    elif exchange == "bybit":
-        balance = bybit_exchange.fetch_wallet_balance()
+use_binance_futures = False
+if 'BINANCE-FUTURES' in config['EXCHANGES']:
+    if config['EXCHANGES']['BINANCE-FUTURES']['ENABLED']:
+        print("Binance is enabled!")
+        use_binance_futures = True
 
-    base_currency = symbol.split("/")[0]
-    return balance['free'][base_currency]
+        exchange = ccxt.binance({
+        'apiKey': config['EXCHANGES']['BINANCE-FUTURES']['API_KEY'],
+        'secret': config['EXCHANGES']['BINANCE-FUTURES']['API_SECRET'],
+        'options': {
+            'defaultType': 'future',
+            },
+        'urls': {
+            'api': {
+                'public': 'https://testnet.binancefuture.com/fapi/v1',
+                'private': 'https://testnet.binancefuture.com/fapi/v1',
+            }, }
+        })
+        exchange.set_sandbox_mode(True)
+
+
+@app.route('/')
+def index():
+    return {'message': 'Server is running!'}
+
+
 
 
 @app.route('/webhook', methods=['POST'])
 def webhook():
-    global position_open
+    print("Hook Received!")
+    #data = request.form.to_dict()  ##This is for private testing locally
     data = json.loads(request.data)
-    signal = data['signal']
-    symbol = data['symbol']
-    exchanges = data['exchanges']
+    print(data)
 
-    amount_binance = get_future_balance('binance', symbol)
-    amount_bybit = get_future_balance('bybit', symbol)
+    if int(data['key']) != config['KEY']:
+        print("Invalid Key, Please Try Again!")
+        return {
+            "status": "error",
+            "message": "Invalid Key, Please Try Again!"
+        }
 
-    responses = []
+    ##############################################################################
+    #             Bybit ## MOVE THIS CODE TO NEW FILE
+    ##############################################################################
+    if data['exchange'] == 'bybit':
 
-    if signal == 'closeshort' or signal == 'closelong':
-        if position_open:
-            position_open = False
-            if 'binance' in exchanges:
-                responses.append(binance_exchange.create_market_order(symbol, signal.replace("close", ""), amount_binance))
-            if 'bybit' in exchanges:
-                responses.append(bybit_exchange.create_market_order(symbol, signal.replace("close", ""), amount_bybit))
-        else:
-            responses.append("هیچ معامله‌ای برای بستن وجود ندارد.")
-    elif signal == 'buy' or signal == 'sell':
-        if position_open:
-            responses.append("یک معامله در حال حاضر باز است. لطفاً ابتدا معامله فعلی را ببندید.")
-        else:
-            position_open = True
-            if 'binance' in exchanges:
-                responses.append(binance_exchange.create_market_order(symbol, signal, amount_binance))
-            if 'bybit' in exchanges:
-                responses.append(bybit_exchange.create_market_order(symbol, signal, amount_bybit))
+        if use_bybit:
+            if data['close_position'] == 'True':
+                print("Closing Position")
+                session.close_position(symbol=data['symbol'])
+            else:
+                if 'cancel_orders' in data:
+                    print("Cancelling Order")
+                    session.cancel_all_active_orders(symbol=data['symbol'])
+                if 'type' in data:
+                    print("Placing Order")
+                    if 'price' in data:
+                        price = data['price']
+                    else:
+                        price = 0
 
-    return str(responses)
 
-# این تابع خطای 404 را مدیریت می‌کند
-@app.errorhandler(404)
-def not_found_error(error):
-    return render_template('404.html'), 404
+                    if data['order_mode'] == 'Both':
+                        take_profit_percent = float(data['take_profit_percent'])/100
+                        stop_loss_percent = float(data['stop_loss_percent'])/100
+                        current_price = session.latest_information_for_symbol(symbol=data['symbol'])['result'][0]['last_price']
+                        if data['side'] == 'Buy':
+                            take_profit_price = round(float(current_price) + (float(current_price) * take_profit_percent), 2)
+                            stop_loss_price = round(float(current_price) - (float(current_price) * stop_loss_percent), 2)
+                        elif data['side'] == 'Sell':
+                            take_profit_price = round(float(current_price) - (float(current_price) * take_profit_percent), 2)
+                            stop_loss_price = round(float(current_price) + (float(current_price) * stop_loss_percent), 2)
 
-# این تابع خطای 500 را مدیریت می‌کند
-@app.errorhandler(500)
-def internal_error(error):
-    # اینجا می‌توانید کدی برای ثبت خطا در سیستم خود اضافه کنید
-    return render_template('500.html'), 500
 
+                        print("Take Profit Price: " + str(take_profit_price))
+                        print("Stop Loss Price: " + str(stop_loss_price))
+
+                        session.place_active_order(symbol=data['symbol'], order_type=data['type'], side=data['side'],
+                                                   qty=data['qty'], time_in_force="GoodTillCancel", reduce_only=False,
+                                                   close_on_trigger=False, price=price, take_profit=take_profit_price, stop_loss=stop_loss_price)
+
+                    elif data['order_mode'] == 'Profit':
+                        take_profit_percent = float(data['take_profit_percent'])/100
+                        current_price = session.latest_information_for_symbol(symbol=data['symbol'])['result'][0]['last_price']
+                        if data['side'] == 'Buy':
+                            take_profit_price = round(float(current_price) + (float(current_price) * take_profit_percent), 2)
+                        elif data['side'] == 'Sell':
+                            take_profit_price = round(float(current_price) - (float(current_price) * take_profit_percent), 2)
+
+                        print("Take Profit Price: " + str(take_profit_price))
+                        session.place_active_order(symbol=data['symbol'], order_type=data['type'], side=data['side'],
+                                                   qty=data['qty'], time_in_force="GoodTillCancel", reduce_only=False,
+                                                   close_on_trigger=False, price=price, take_profit=take_profit_price)
+                    elif data['order_mode'] == 'Stop':
+                        stop_loss_percent = float(data['stop_loss_percent'])/100
+                        current_price = session.latest_information_for_symbol(symbol=data['symbol'])['result'][0]['last_price']
+                        if data['side'] == 'Buy':
+                            stop_loss_price = round(float(current_price) - (float(current_price) * stop_loss_percent), 2)
+                        elif data['side'] == 'Sell':
+                            stop_loss_price = round(float(current_price) + (float(current_price) * stop_loss_percent), 2)
+
+                        print("Stop Loss Price: " + str(stop_loss_price))
+                        session.place_active_order(symbol=data['symbol'], order_type=data['type'], side=data['side'],
+                                                   qty=data['qty'], time_in_force="GoodTillCancel", reduce_only=False,
+                                                   close_on_trigger=False, price=price, stop_loss=stop_loss_price)
+
+
+
+                    else:
+                        session.place_active_order(symbol=data['symbol'], order_type=data['type'], side=data['side'],
+                                                   qty=data['qty'], time_in_force="GoodTillCancel", reduce_only=False,
+                                                   close_on_trigger=False, price=price)
+
+
+        return {
+            "status": "success",
+            "message": "Bybit Webhook Received!"
+        }
+    ##############################################################################
+    #             Binance Futures
+    ##############################################################################
+    if data['exchange'] == 'binance-futures':
+        if use_binance_futures:
+            bot = Bot()
+            bot.run(data)
+            return {
+                "status": "success",
+                "message": "Binance Futures Webhook Received!"
+            }
+
+
+
+
+    else:
+        print("Invalid Exchange, Please Try Again!")
+        return {
+            "status": "error",
+            "message": "Invalid Exchange, Please Try Again!"
+        }
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 8080)))
+    app.run(debug=False)
+
