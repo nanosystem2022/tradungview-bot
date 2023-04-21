@@ -45,14 +45,14 @@ def webhook():
     print(data)
     
     if position_open:
-        if "closelong" in data['strategy']:
+        if "closelong" in data['strategy.order.action']:
             close_position(data)
-        elif "closeshort" in data['strategy']:
+        elif "closeshort" in data['strategy.order.action']:
             close_position(data)
     else:
-        if "long" in data['strategy']:
+        if "long" in data['strategy.order.action']:
             open_position(data, "long")
-        elif "short" in data['strategy']:
+        elif "short" in data['strategy.order.action']:
             open_position(data, "short")
             
     return jsonify({})
@@ -83,9 +83,9 @@ def close_position(data):
     if exchange in exchanges:
         ex = exchanges[exchange]
         
-        if "long" in data['strategy']:
+        if "long" in data['strategy.order.action']:
             ex.create_market_sell_order(symbol, data['volume'])
-        elif "short" in data['strategy']:
+        elif "short" in data['strategy.order.action']:
             ex.create_market_buy_order(symbol, data['volume'])
             
         position_open = False
