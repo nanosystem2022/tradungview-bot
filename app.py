@@ -28,8 +28,10 @@ if config['EXCHANGES']['binanceusdm']['ENABLED']:
     if config['EXCHANGES']['binanceusdm']['TESTNET']:
         binance_options['urls'] = {
             'api': {
-                'public': 'https://testnet.binancefuture.com/fapi/v1',
-                'private': 'https://testnet.binancefuture.com/fapi/v1',
+                'public': 'https://testnet.binance.vision/api',
+                'private': 'https://testnet.binance.vision/api',
+                'fapiPublic': 'https://testnet.binancefuture.com/fapi',
+                'fapiPrivate': 'https://testnet.binancefuture.com/fapi'
             }
         }
 
