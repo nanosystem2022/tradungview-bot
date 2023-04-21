@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+
+    <title>اطلاعات معاملاتی</title>
+  </head>
+  <body>
+    <h1>اطلاعات معاملاتی</h1>
+    <h2>موجودی‌ها</h2>
+    <table>
+      <thead>
+        <tr>
+          <th>صرافی</th>
+          <th>ارز</th>
+          <th>موجودی</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for exchange_name, balances in all_balances.items() %}
+          {% for balance in balances %}
+            <tr>
+              <td>{{ exchange_name }}</td>
+              <td>{{ balance['currency'] }}</td>
+              <td>{{ balance['amount'] }}</td>
+            </tr>
+          {% endfor %}
+        {% endfor %}
+      </tbody>
+    </table>
+
+    <h2>پوزیشن‌ها</h2>
+    <table>
+      <thead>
+        <tr>
+          <th>صرافی</th>
+          <th>نماد</th>
+          <th>نوع پوزیشن</th>
+          <th>تعداد</th>
+          <th>قیمت ورود</th>
+          <th>سود یا ضرر</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for exchange_name, positions in all_positions.items() %}
+          {% for position in positions %}
+            <tr>
+              <td>{{ exchange_name }}</td>
+              <td>{{ position['symbol'] }}</td>
+              <td>{{ position['type'] }}</td>
+              <td>{{ position['amount'] }}</td>
+              <td>{{ position['entry_price'] }}</td>
+              <td>{{ position['pnl'] }}</td>
+            </tr>
+          {% endfor %}
+        {% endfor %}
+      </tbody>
+    </table>
+  </body>
+</html>
