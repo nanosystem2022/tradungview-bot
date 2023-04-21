@@ -1,4 +1,4 @@
-import ccxt
+import os
 import json
 from flask import Flask, request, jsonify, render_template
 from ccxt import binance, bybit
@@ -6,83 +6,18 @@ import ccxt
 
 app = Flask(__name__)
 
-# خواندن تنظیمات از فایل config.json
-with open('config.json', 'r') as f:
+# بارگذاری پیکربندی از فایل
+with open("config.json") as f:
     config = json.load(f)
 
-# تنظیمات اکانت و API بای بیت
-if config['EXCHANGES']['BYBIT']['ENABLED']:
-    bybit = ccxt.bybit({
-        'apiKey': config['EXCHANGES']['BYBIT']['API_KEY'],
-        'secret': config['EXCHANGES']['BYBIT']['API_SECRET'],
-    })
+exchanges = {
+    'binance': ccxt.binance(config['EXCHANGES']['binanceusdm']),
+    'bybit': ccxt.bybit(config['EXCHANGES']['BYBIT']),
+}
 
-# تنظیمات اکانت و API بایننس
-if config['EXCHANGES']['binanceusdm']['ENABLED']:
-    binance_options = {
-        'apiKey': config['EXCHANGES']['binanceusdm']['API_KEY'],
-        'secret': config['EXCHANGES']['binanceusdm']['API_SECRET'],
-    }
-
-    if config['EXCHANGES']['binanceusdm']['TESTNET']:
-        binance_options['urls'] = {
-            'api': 'https://testnet.binancefuture.com',
-            'www': 'https://testnet.binancefuture.com',
-            'test': 'https://testnet.binancefuture.com',
-            'stream': 'wss://stream.binancefuture.com/ws',
-            'fapiPublic': 'https://testnet.binancefuture.com/fapi/v1',
-            'fapiPrivate': 'https://testnet.binancefuture.com/fapi/v1',
-            'fapiData': 'https://testnet.binancefuture.com/futures/data',
-        }
-
-    binance = ccxt.binanceusdm(binance_options)
-
-def calculate_amount(exchange, symbol, percentage):
-    balance = exchange.fetch_balance()
-    account_balance = balance['info']['totalWalletBalance']
-    order_book = exchange.fetch_order_book(symbol)
-    top_bid = order_book['bids'][0][0] if len(order_book['bids']) > 0 else None
-    top_ask = order_book['asks'][0][0] if len(order_book['asks']) > 0 else None
-    mid_price = (top_bid + top_ask) / 2
-    amount = (account_balance * percentage) / mid_price
-    return exchange.amount_to_precision(symbol, amount)
-
-@app.route('/webhook', methods=['POST'])
-def webhook():
-    data = request.get_json()
-    action = data['action'].upper()
-    exchange = data['exchange'].upper()
-    symbol = data['symbol']
-    side = data['side'].upper()
-    percentage = float(data['percentage']) / 100
-    open_positions = {
-        'BINANCEUSDM': False,
-        'BYBIT': False
-    }
-
-    if action == 'CLOSESHORT' or action == 'CLOSELONG':
-        if open_positions['BINANCEUSDM']:
-            close_order = binance.create_market_order(symbol, 'SELL' if action == 'CLOSELONG' else 'BUY', amount)
-            open_positions['BINANCEUSDM'] = False
-
-        if open_positions['BYBIT']:
-            close_order = bybit.create_market_order(symbol, 'SELL' if action == 'CLOSELONG' else 'BUY', amount)
-            open_positions['BYBIT'] = False
-
-    elif action == 'OPEN':
-        if not open_positions['BINANCEUSDM'] and not open_positions['BYBIT']:
-            amount_binance = calculate_amount(binance, symbol, percentage)
-            amount_bybit = calculate_amount(bybit, symbol, percentage)
-
-            if config['EXCHANGES']['binanceusdm']['ENABLED']:
-                open_order_binance = binance.create_market_order(symbol, side, amount_binance)
-                open_positions['BINANCEUSDM'] = True
-
-            if config['EXCHANGES']['BYBIT']['ENABLED']:
-                open_order_bybit = bybit.create_market_order(symbol, side, amount_bybit)
-                open_positions['BYBIT'] = True
-
-            return jsonify({'status': 'success'})
+for exchange_name, exchange in exchanges.items():
+    if config['EXCHANGES'][exchange_name]['TESTNET']:
+        exchange.set_sandbox_mode(True)
 
 @app.route('/balances')
 def balances():
@@ -153,18 +88,5 @@ def get_positions(exchange):
             return []
     return []
 
-@app.route("/")
-def home():
-    return render_template("index.html")
-
-@app.errorhandler(404)
-def page_not_found(error):
-    return render_template("404.html"), 404
-
-@app.errorhandler(500)
-def internal_server_error(error):
-    return render_template("500.html"), 500
-
-
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 8080)))
+    app.run(host='0.0.0.0', port=int(os.environ.get("PORT", 8080)), debug=True)
