@@ -1,177 +1,170 @@
-import json
-from flask import Flask, render_template, request, jsonify
-from pybit import HTTP
-import time
 import ccxt
-from binanceFutures import Bot
-
+import json
+from flask import Flask, request, jsonify, render_template
+from ccxt import binance, bybit
+import ccxt
 
 app = Flask(__name__)
 
-# load config.json
-with open('config.json') as config_file:
-    config = json.load(config_file)
+# خواندن تنظیمات از فایل config.json
+with open('config.json', 'r') as f:
+    config = json.load(f)
 
+# تنظیمات اکانت و API بای بیت
+if config['EXCHANGES']['BYBIT']['ENABLED']:
+    bybit = ccxt.bybit({
+        'apiKey': config['EXCHANGES']['BYBIT']['API_KEY'],
+        'secret': config['EXCHANGES']['BYBIT']['API_SECRET'],
+    })
 
-###############################################################################
-#
-#             This Section is for Exchange Validation
-#
-###############################################################################
+# تنظیمات اکانت و API بایننس
+if config['EXCHANGES']['binanceusdm']['ENABLED']:
+    binance_options = {
+        'apiKey': config['EXCHANGES']['binanceusdm']['API_KEY'],
+        'secret': config['EXCHANGES']['binanceusdm']['API_SECRET'],
+    }
 
-use_bybit = False
-if 'BYBIT' in config['EXCHANGES']:
-    if config['EXCHANGES']['BYBIT']['ENABLED']:
-        print("Bybit is enabled!")
-        use_bybit = True
+    if config['EXCHANGES']['binanceusdm']['TESTNET']:
+        binance_options['urls'] = {
+            'api': 'https://testnet.binancefuture.com',
+            'www': 'https://testnet.binancefuture.com',
+            'test': 'https://testnet.binancefuture.com',
+            'stream': 'wss://stream.binancefuture.com/ws',
+            'fapiPublic': 'https://testnet.binancefuture.com/fapi/v1',
+            'fapiPrivate': 'https://testnet.binancefuture.com/fapi/v1',
+            'fapiData': 'https://testnet.binancefuture.com/futures/data',
+        }
 
-    session = HTTP(
-        endpoint='https://api.bybit.com',
-        api_key=config['EXCHANGES']['BYBIT']['API_KEY'],
-        api_secret=config['EXCHANGES']['BYBIT']['API_SECRET']
-    )
+    binance = ccxt.binanceusdm(binance_options)
 
-use_binance_futures = False
-if 'BINANCE-FUTURES' in config['EXCHANGES']:
-    if config['EXCHANGES']['BINANCE-FUTURES']['ENABLED']:
-        print("Binance is enabled!")
-        use_binance_futures = True
-
-        exchange = ccxt.binance({
-        'apiKey': config['EXCHANGES']['BINANCE-FUTURES']['API_KEY'],
-        'secret': config['EXCHANGES']['BINANCE-FUTURES']['API_SECRET'],
-        'options': {
-            'defaultType': 'future',
-            },
-        'urls': {
-            'api': {
-                'public': 'https://testnet.binancefuture.com/fapi/v1',
-                'private': 'https://testnet.binancefuture.com/fapi/v1',
-            }, }
-        })
-        exchange.set_sandbox_mode(True)
-
-
-@app.route('/')
-def index():
-    return {'message': 'Server is running!'}
-
-
-
+def calculate_amount(exchange, symbol, percentage):
+    balance = exchange.fetch_balance()
+    account_balance = balance['info']['totalWalletBalance']
+    order_book = exchange.fetch_order_book(symbol)
+    top_bid = order_book['bids'][0][0] if len(order_book['bids']) > 0 else None
+    top_ask = order_book['asks'][0][0] if len(order_book['asks']) > 0 else None
+    mid_price = (top_bid + top_ask) / 2
+    amount = (account_balance * percentage) / mid_price
+    return exchange.amount_to_precision(symbol, amount)
 
 @app.route('/webhook', methods=['POST'])
 def webhook():
-    print("Hook Received!")
-    #data = request.form.to_dict()  ##This is for private testing locally
-    data = json.loads(request.data)
-    print(data)
+    data = request.get_json()
+    action = data['action'].upper()
+    exchange = data['exchange'].upper()
+    symbol = data['symbol']
+    side = data['side'].upper()
+    percentage = float(data['percentage']) / 100
+    open_positions = {
+        'BINANCEUSDM': False,
+        'BYBIT': False
+    }
 
-    if int(data['key']) != config['KEY']:
-        print("Invalid Key, Please Try Again!")
-        return {
-            "status": "error",
-            "message": "Invalid Key, Please Try Again!"
-        }
+    if action == 'CLOSESHORT' or action == 'CLOSELONG':
+        if open_positions['BINANCEUSDM']:
+            close_order = binance.create_market_order(symbol, 'SELL' if action == 'CLOSELONG' else 'BUY', amount)
+            open_positions['BINANCEUSDM'] = False
 
-    ##############################################################################
-    #             Bybit ## MOVE THIS CODE TO NEW FILE
-    ##############################################################################
-    if data['exchange'] == 'bybit':
+        if open_positions['BYBIT']:
+            close_order = bybit.create_market_order(symbol, 'SELL' if action == 'CLOSELONG' else 'BUY', amount)
+            open_positions['BYBIT'] = False
 
-        if use_bybit:
-            if data['close_position'] == 'True':
-                print("Closing Position")
-                session.close_position(symbol=data['symbol'])
+    elif action == 'OPEN':
+        if not open_positions['BINANCEUSDM'] and not open_positions['BYBIT']:
+            amount_binance = calculate_amount(binance, symbol, percentage)
+            amount_bybit = calculate_amount(bybit, symbol, percentage)
+
+            if config['EXCHANGES']['binanceusdm']['ENABLED']:
+                open_order_binance = binance.create_market_order(symbol, side, amount_binance)
+                open_positions['BINANCEUSDM'] = True
+
+            if config['EXCHANGES']['BYBIT']['ENABLED']:
+                open_order_bybit = bybit.create_market_order(symbol, side, amount_bybit)
+                open_positions['BYBIT'] = True
+
+            return jsonify({'status': 'success'})
+
+@app.route('/balances')
+def balances():
+    all_balances = {}
+    for exchange_name, exchange in exchanges.items():
+        try:
+            if config['EXCHANGES'][exchange_name]['FUTURES']:
+                if exchange.name == 'binance':
+                    balances_data = exchange.fapiPrivate_get_balance()
+                elif exchange.name == 'bybit':
+                    balances_data = exchange.private_get_wallet_balance()['result']
+
+                balances = [
+                    {
+                        'currency': b['asset'] if exchange.name == 'binance' else b,
+                        'amount': float(b['availableBalance']) if exchange.name == 'binance' else float(balances_data[b]['available_balance'])
+                    }
+                    for b in balances_data
+                ]
+
+                all_balances[exchange_name] = balances
             else:
-                if 'cancel_orders' in data:
-                    print("Cancelling Order")
-                    session.cancel_all_active_orders(symbol=data['symbol'])
-                if 'type' in data:
-                    print("Placing Order")
-                    if 'price' in data:
-                        price = data['price']
-                    else:
-                        price = 0
+                all_balances[exchange_name] = "Futures trading not enabled"
+        except Exception as e:
+            all_balances[exchange_name] = str(e)
 
+    all_positions = {}
+    for exchange_name, exchange in exchanges.items():
+        all_positions[exchange_name] = get_positions(exchange)
 
-                    if data['order_mode'] == 'Both':
-                        take_profit_percent = float(data['take_profit_percent'])/100
-                        stop_loss_percent = float(data['stop_loss_percent'])/100
-                        current_price = session.latest_information_for_symbol(symbol=data['symbol'])['result'][0]['last_price']
-                        if data['side'] == 'Buy':
-                            take_profit_price = round(float(current_price) + (float(current_price) * take_profit_percent), 2)
-                            stop_loss_price = round(float(current_price) - (float(current_price) * stop_loss_percent), 2)
-                        elif data['side'] == 'Sell':
-                            take_profit_price = round(float(current_price) - (float(current_price) * take_profit_percent), 2)
-                            stop_loss_price = round(float(current_price) + (float(current_price) * stop_loss_percent), 2)
+    return render_template('balances.html', all_balances=all_balances, all_positions=all_positions)
 
+def get_positions(exchange):
+    if exchange.name == 'binance':
+        try:
+            positions = exchange.fapiPrivate_get_positionrisk()
+            formatted_positions = [
+                {
+                    'symbol': position['symbol'],
+                    'type': 'long' if float(position['positionAmt']) > 0 else 'short',
+                    'amount': abs(float(position['positionAmt'])),
+                    'entry_price': float(position['entryPrice']),
+                    'pnl': float(position['unRealizedProfit'])
+                }
+                for position in positions if float(position['positionAmt']) != 0
+            ]
+            return formatted_positions
+        except Exception as e:
+            print(f"Error getting positions: {str(e)}")
+            return []
 
-                        print("Take Profit Price: " + str(take_profit_price))
-                        print("Stop Loss Price: " + str(stop_loss_price))
+    elif exchange.name == 'bybit':
+        try:
+            positions = exchange.private_get_position_list()['result']
+            formatted_positions = [
+                {
+                    'symbol': position['symbol'],
+                    'type': position['side'].lower(),
+                    'amount': float(position['size']),
+                    'entry_price': float(position['entry_price']),
+                    'pnl': float(position['unrealised_pnl'])
+                }
+                for position in positions
+            ]
+            return formatted_positions
+        except Exception as e:
+            print(f"Error getting positions: {str(e)}")
+            return []
+    return []
 
-                        session.place_active_order(symbol=data['symbol'], order_type=data['type'], side=data['side'],
-                                                   qty=data['qty'], time_in_force="GoodTillCancel", reduce_only=False,
-                                                   close_on_trigger=False, price=price, take_profit=take_profit_price, stop_loss=stop_loss_price)
+@app.route("/")
+def home():
+    return render_template("index.html")
 
-                    elif data['order_mode'] == 'Profit':
-                        take_profit_percent = float(data['take_profit_percent'])/100
-                        current_price = session.latest_information_for_symbol(symbol=data['symbol'])['result'][0]['last_price']
-                        if data['side'] == 'Buy':
-                            take_profit_price = round(float(current_price) + (float(current_price) * take_profit_percent), 2)
-                        elif data['side'] == 'Sell':
-                            take_profit_price = round(float(current_price) - (float(current_price) * take_profit_percent), 2)
+@app.errorhandler(404)
+def page_not_found(error):
+    return render_template("404.html"), 404
 
-                        print("Take Profit Price: " + str(take_profit_price))
-                        session.place_active_order(symbol=data['symbol'], order_type=data['type'], side=data['side'],
-                                                   qty=data['qty'], time_in_force="GoodTillCancel", reduce_only=False,
-                                                   close_on_trigger=False, price=price, take_profit=take_profit_price)
-                    elif data['order_mode'] == 'Stop':
-                        stop_loss_percent = float(data['stop_loss_percent'])/100
-                        current_price = session.latest_information_for_symbol(symbol=data['symbol'])['result'][0]['last_price']
-                        if data['side'] == 'Buy':
-                            stop_loss_price = round(float(current_price) - (float(current_price) * stop_loss_percent), 2)
-                        elif data['side'] == 'Sell':
-                            stop_loss_price = round(float(current_price) + (float(current_price) * stop_loss_percent), 2)
+@app.errorhandler(500)
+def internal_server_error(error):
+    return render_template("500.html"), 500
 
-                        print("Stop Loss Price: " + str(stop_loss_price))
-                        session.place_active_order(symbol=data['symbol'], order_type=data['type'], side=data['side'],
-                                                   qty=data['qty'], time_in_force="GoodTillCancel", reduce_only=False,
-                                                   close_on_trigger=False, price=price, stop_loss=stop_loss_price)
-
-
-
-                    else:
-                        session.place_active_order(symbol=data['symbol'], order_type=data['type'], side=data['side'],
-                                                   qty=data['qty'], time_in_force="GoodTillCancel", reduce_only=False,
-                                                   close_on_trigger=False, price=price)
-
-
-        return {
-            "status": "success",
-            "message": "Bybit Webhook Received!"
-        }
-    ##############################################################################
-    #             Binance Futures
-    ##############################################################################
-    if data['exchange'] == 'binance-futures':
-        if use_binance_futures:
-            bot = Bot()
-            bot.run(data)
-            return {
-                "status": "success",
-                "message": "Binance Futures Webhook Received!"
-            }
-
-
-
-
-    else:
-        print("Invalid Exchange, Please Try Again!")
-        return {
-            "status": "error",
-            "message": "Invalid Exchange, Please Try Again!"
-        }
 
 if __name__ == '__main__':
-    app.run(debug=False)
-
+    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 8080)))
