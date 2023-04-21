@@ -1,92 +1,95 @@
 import os
 import json
-from flask import Flask, request, jsonify, render_template
-from ccxt import binance, bybit
+from flask import Flask, request, jsonify
 import ccxt
 
 app = Flask(__name__)
 
-# بارگذاری پیکربندی از فایل
-with open("config.json") as f:
-    config = json.load(f)
+# خواندن تنظیمات از فایل config.json
+with open("config.json") as config_file:
+    config = json.load(config_file)
 
-exchanges = {
-    'binance': ccxt.binance(config['EXCHANGES']['binanceusdm']),
-    'bybit': ccxt.bybit(config['EXCHANGES']['BYBIT']),
-}
+# بررسی تنظیمات و ایجاد نمونه‌های صرافی‌ها
+exchanges = {}
+if config['EXCHANGES']['BYBIT']['ENABLED']:
+    bybit = ccxt.bybit({
+        'apiKey': config['EXCHANGES']['BYBIT']['API_KEY'],
+        'secret': config['EXCHANGES']['BYBIT']['API_SECRET'],
+    })
+    exchanges['bybit'] = bybit
 
-for exchange_name, exchange in exchanges.items():
-    if config['EXCHANGES'][exchange_name]['TESTNET']:
-        exchange.set_sandbox_mode(True)
+if config['EXCHANGES']['binanceusdm']['ENABLED']:
+    binance_options = {
+        'apiKey': config['EXCHANGES']['binanceusdm']['API_KEY'],
+        'secret': config['EXCHANGES']['binanceusdm']['API_SECRET'],
+        'options': {'defaultType': 'future'}
+    }
 
-@app.route('/balances')
-def balances():
-    all_balances = {}
-    for exchange_name, exchange in exchanges.items():
-        try:
-            if config['EXCHANGES'][exchange_name]['FUTURES']:
-                if exchange.name == 'binance':
-                    balances_data = exchange.fapiPrivate_get_balance()
-                elif exchange.name == 'bybit':
-                    balances_data = exchange.private_get_wallet_balance()['result']
+    if config['EXCHANGES']['binanceusdm']['TESTNET']:
+        binance_options['urls'] = {
+            'api': {
+                'public': 'https://testnet.binancefuture.com/fapi/v1',
+                'private': 'https://testnet.binancefuture.com/fapi/v1',
+            }
+        }
 
-                balances = [
-                    {
-                        'currency': b['asset'] if exchange.name == 'binance' else b,
-                        'amount': float(b['availableBalance']) if exchange.name == 'binance' else float(balances_data[b]['available_balance'])
-                    }
-                    for b in balances_data
-                ]
+    binance = ccxt.binance(binance_options)
+    exchanges['binance'] = binance
 
-                all_balances[exchange_name] = balances
-            else:
-                all_balances[exchange_name] = "Futures trading not enabled"
-        except Exception as e:
-            all_balances[exchange_name] = str(e)
+position_open = False
 
-    all_positions = {}
-    for exchange_name, exchange in exchanges.items():
-        all_positions[exchange_name] = get_positions(exchange)
+@app.route('/webhook', methods=['POST'])
+def webhook():
+    global position_open
+    data = request.get_json()
+    print(data)
+    
+    if position_open:
+        if "closelong" in data['strategy']:
+            close_position(data)
+        elif "closeshort" in data['strategy']:
+            close_position(data)
+    else:
+        if "long" in data['strategy']:
+            open_position(data, "long")
+        elif "short" in data['strategy']:
+            open_position(data, "short")
+            
+    return jsonify({})
 
-    return render_template('balances.html', all_balances=all_balances, all_positions=all_positions)
+def open_position(data, side):
+    global position_open
+    
+    symbol = data['ticker']
+    exchange = data['exchange'].lower()
+    
+    if exchange in exchanges:
+        ex = exchanges[exchange]
+        
+        if side == "long":
+            ex.create_market_buy_order(symbol, data['volume'])
+        elif side == "short":
+            ex.create_market_sell_order(symbol, data['volume'])
+        
+        position_open = True
+        print(f"Opened {side} position on {exchange}: {symbol}")
 
-def get_positions(exchange):
-    if exchange.name == 'binance':
-        try:
-            positions = exchange.fapiPrivate_get_positionrisk()
-            formatted_positions = [
-                {
-                    'symbol': position['symbol'],
-                    'type': 'long' if float(position['positionAmt']) > 0 else 'short',
-                    'amount': abs(float(position['positionAmt'])),
-                    'entry_price': float(position['entryPrice']),
-                    'pnl': float(position['unRealizedProfit'])
-                }
-                for position in positions if float(position['positionAmt']) != 0
-            ]
-            return formatted_positions
-        except Exception as e:
-            print(f"Error getting positions: {str(e)}")
-            return []
-
-    elif exchange.name == 'bybit':
-        try:
-            positions = exchange.private_get_position_list()['result']
-            formatted_positions = [
-                {
-                    'symbol': position['symbol'],
-                    'type': position['side'].lower(),
-                    'amount': float(position['size']),
-                    'entry_price': float(position['entry_price']),
-                    'pnl': float(position['unrealised_pnl'])
-                }
-                for position in positions
-            ]
-            return formatted_positions
-        except Exception as e:
-            print(f"Error getting positions: {str(e)}")
-            return []
-    return []
+def close_position(data):
+    global position_open
+    
+    symbol = data['ticker']
+    exchange = data['exchange'].lower()
+    
+    if exchange in exchanges:
+        ex = exchanges[exchange]
+        
+        if "long" in data['strategy']:
+            ex.create_market_sell_order(symbol, data['volume'])
+        elif "short" in data['strategy']:
+            ex.create_market_buy_order(symbol, data['volume'])
+            
+        position_open = False
+        print(f"Closed position on {exchange}: {symbol}")
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=int(os.environ.get("PORT", 8080)), debug=True)
+    app.run()
