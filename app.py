@@ -1,123 +1,116 @@
-import os
-import json
-from flask import Flask, request, jsonify, render_template
 import ccxt
+import json
+from flask import Flask, request
+from ccxt.base.errors import BadRequest
 
 app = Flask(__name__)
 
-# خواندن تنظیمات از فایل config.json
 with open("config.json") as config_file:
     config = json.load(config_file)
 
-# بررسی تنظیمات و ایجاد نمونه‌های صرافی‌ها
-exchanges = {}
-if config['EXCHANGES']['BYBIT']['ENABLED']:
-    bybit = ccxt.bybit({
-        'apiKey': config['EXCHANGES']['BYBIT']['API_KEY'],
-        'secret': config['EXCHANGES']['BYBIT']['API_SECRET'],
-    })
-    exchanges['bybit'] = bybit
+binance_config = config["EXCHANGES"]["binanceusdm"]
+bybit_config = config["EXCHANGES"]["BYBIT"]
 
-if config['EXCHANGES']['binanceusdm']['ENABLED']:
-    binance_options = {
-        'apiKey': config['EXCHANGES']['binanceusdm']['API_KEY'],
-        'secret': config['EXCHANGES']['binanceusdm']['API_SECRET'],
-        'options': {'defaultType': 'future'}
-    }
+class FuturesTradingBot:
+    def __init__(self, exchange, api_key, api_secret, testnet=False):
+        self.exchange = exchange
+        self.exchange.apiKey = api_key
+        self.exchange.secret = api_secret
+        self.exchange.set_sandbox_mode(enabled=testnet)
+        self.current_position = None
 
-    if config['EXCHANGES']['binanceusdm']['TESTNET']:
-        binance_options['urls'] = {
-            'api': {
-                'public': 'https://testnet.binance.vision/api',
-                'private': 'https://testnet.binance.vision/api',
-                'fapiPublic': 'https://testnet.binancefuture.com/fapi',
-                'fapiPrivate': 'https://testnet.binancefuture.com/fapi'
-            }
+    def get_margin_balance(self, symbol):
+        margin_account = self.exchange.fetch_balance({'type': 'future'})
+        margin_balance = margin_account['info']['availableMargin']
+        return float(margin_balance)
+
+    def place_order(self, symbol, side, percentage, type='market'):
+        if self.current_position:
+            return
+
+        balance = self.get_margin_balance(symbol)
+        amount = balance * percentage / 100
+
+        order = {
+            'symbol': symbol,
+            'side': side,
+            'type': type,
+            'quantity': amount,
         }
+        try:
+            result = self.exchange.create_order(**order)
+            self.current_position = result
+            print(f"Opened {side} position: {result}")
+        except BadRequest as e:
+            print(f"Error placing order: {e}")
 
-    binance = ccxt.binance(binance_options)
-    exchanges['binance'] = binance
+    def close_position(self, symbol):
+        if not self.current_position:
+            return
 
-position_open = False
+        side = 'buy' if self.current_position['side'] == 'sell' else 'sell'
+        order = {
+            'symbol': symbol,
+            'side': side,
+            'type': 'market',
+            'quantity': self.current_position['info']['executedQty'],
+        }
+        try:
+            result = self.exchange.create_order(**order)
+            print(f"Closed position: {result}")
+            self.current_position = None
+        except BadRequest as e:
+            print(f"Error closing position: {e}")
 
-def calculate_amount(exchange, symbol, percentage):
-    balance = exchange.fetch_balance()
-    account_balance = balance['info']['totalWalletBalance']
-    order_book = exchange.fetch_order_book(symbol)
-    top_bid = order_book['bids'][0][0] if len(order_book['bids']) > 0 else None
-    top_ask = order_book['asks'][0][0] if len(order_book['asks']) > 0 else None
-    mid_price = (top_bid + top_ask) / 2
-    amount = (account_balance * percentage) / mid_price
-    return exchange.amount_to_precision(symbol, amount)
+binance = ccxt.binance({
+    'enableRateLimit': True,
+    'options': {
+        'defaultType': 'future',
+    },
+})
+
+bybit = ccxt.bybit({
+    'enableRateLimit': True,
+})
+
+binance_bot = FuturesTradingBot(binance, binance_config["API_KEY"], binance_config["API_SECRET"], testnet=binance_config["TESTNET"])
+bybit_bot = FuturesTradingBot(bybit, bybit_config["API_KEY"], bybit_config["API_SECRET"])
 
 @app.route('/webhook', methods=['POST'])
 def webhook():
-    global position_open
-    data = request.get_json()
-    print(data)
-    
-    if position_open:
-        if "closelong" in data['strategy.order.action']:
-            close_position(data)
-        elif "closeshort" in data['strategy.order.action']:
-            close_position(data)
+    data = json.loads(request.data)
+
+    symbol = data['symbol']
+    side = data['side']
+    exchange = data['exchange'].lower()
+
+    if side.lower() == 'closelong' or side.lower() == 'closeshort':
+        if exchange == 'binanceusdm' and binance_config["ENABLED"]:
+            binance_bot.close_position(symbol)
+        elif exchange == 'bybit' and bybit_config["ENABLED"]:
+            bybit_bot.close_position(symbol)
+        elif exchange == 'both':
+            if binance_config["ENABLED"]:
+                binance_bot.close_position(symbol)
+            if bybit_config["ENABLED"]:
+                bybit_bot.close_position(symbol)
     else:
-        if "long" in data['strategy.order.action']:
-            open_position(data, "long")
-        elif "short" in data['strategy.order.action']:
-            open_position(data, "short")
-            
-    return jsonify({})
+        percentage = data['percentage']
 
-def open_position(data, side):
-    global position_open
-    
-    symbol = data['ticker']
-    exchange = data['exchange'].lower()
-    percentage = 0.01  # به عنوان مثال، می‌توانید این مقدار را تغییر دهید
-    
-    if exchange in exchanges:
-        ex = exchanges[exchange]
-        amount = calculate_amount(ex, symbol, percentage)
-        
-        if side == "long":
-            ex.create_market_buy_order(symbol, amount)
-        elif side == "short":
-            ex.create_market_sell_order(symbol, amount)
-        
-        position_open = True
-        print(f"Opened {side} position on {exchange}: {symbol}")
+        if exchange == 'binanceusdm' and binance_config["ENABLED"]:
+            binance_bot.place_order(symbol, side, percentage)
+        elif exchange == 'bybit' and bybit_config["ENABLED"]:
+            bybit_bot.place_order(symbol, side, percentage)
+        elif exchange == 'both':
+            if binance_config["ENABLED"]:
+                binance_bot.place_order(symbol, side, percentage)
+            if bybit_config["ENABLED"]:
+                bybit_bot.place_order(symbol, side, percentage)
 
-def close_position(data):
-    global position_open
-    
-    symbol = data['ticker']
-    exchange = data['exchange'].lower()
-    percentage = 1  # 100% of the position will be closed
-    
-    if exchange in exchanges:
-        ex = exchanges[exchange]
-        amount = calculate_amount(ex, symbol, percentage)
-        
-        if "long" in data['strategy.order.action']:
-            ex.create_market_sell_order(symbol, amount)
-        elif "short" in data['strategy.order.action']:
-            ex.create_market_buy_order(symbol, amount)
-            
-        position_open = False
-        print(f"Closed position on {exchange}: {symbol}")
-
-@app.route('/')
-def home():
-    return render_template('index.html')
-
-@app.errorhandler(404)
-def page_not_found(e):
-    return render_template('404.html'), 404
-
-@app.errorhandler(500)
-def internal_server_error(e):
-    return render_template('500.html'), 500
+    return {
+        'code': 'success',
+        'message': 'Webhook received and processed'
+    }
 
 if __name__ == '__main__':
     app.run()
