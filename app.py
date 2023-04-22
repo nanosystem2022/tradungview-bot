@@ -40,12 +40,22 @@ if config['EXCHANGES']['binanceusdm']['ENABLED']:
 
 position_open = False
 
+def calculate_amount(exchange, symbol, percentage):
+    balance = exchange.fetch_balance()
+    account_balance = balance['info']['totalWalletBalance']
+    order_book = exchange.fetch_order_book(symbol)
+    top_bid = order_book['bids'][0][0] if len(order_book['bids']) > 0 else None
+    top_ask = order_book['asks'][0][0] if len(order_book['asks']) > 0 else None
+    mid_price = (top_bid + top_ask) / 2
+    amount = (account_balance * percentage) / mid_price
+    return exchange.amount_to_precision(symbol, amount)
+
 @app.route('/webhook', methods=['POST'])
 def webhook():
     global position_open
     data = request.get_json()
     print(data)
-
+    
     if position_open:
         if "closelong" in data['strategy.order.action']:
             close_position(data)
@@ -53,43 +63,47 @@ def webhook():
             close_position(data)
     else:
         if "long" in data['strategy.order.action']:
-            open_position(data, "long", float(data['volume']))
+            open_position(data, "long")
         elif "short" in data['strategy.order.action']:
-            open_position(data, "short", float(data['volume']))
-
+            open_position(data, "short")
+            
     return jsonify({})
 
-def open_position(data, side, volume):
+def open_position(data, side):
     global position_open
-
+    
     symbol = data['ticker']
     exchange = data['exchange'].lower()
-
+    percentage = 0.01  # به عنوان مثال، می‌توانید این مقدار را تغییر دهید
+    
     if exchange in exchanges:
         ex = exchanges[exchange]
-
+        amount = calculate_amount(ex, symbol, percentage)
+        
         if side == "long":
-            ex.create_market_buy_order(symbol, volume)
+            ex.create_market_buy_order(symbol, amount)
         elif side == "short":
-            ex.create_market_sell_order(symbol, volume)
-
+            ex.create_market_sell_order(symbol, amount)
+        
         position_open = True
         print(f"Opened {side} position on {exchange}: {symbol}")
 
 def close_position(data):
     global position_open
-
+    
     symbol = data['ticker']
     exchange = data['exchange'].lower()
-
+    percentage = 1  # 100% of the position will be closed
+    
     if exchange in exchanges:
         ex = exchanges[exchange]
-
+        amount = calculate_amount(ex, symbol, percentage)
+        
         if "long" in data['strategy.order.action']:
-            ex.create_market_sell_order(symbol, data['volume'])
+            ex.create_market_sell_order(symbol, amount)
         elif "short" in data['strategy.order.action']:
-            ex.create_market_buy_order(symbol, data['volume'])
-
+            ex.create_market_buy_order(symbol, amount)
+            
         position_open = False
         print(f"Closed position on {exchange}: {symbol}")
 
