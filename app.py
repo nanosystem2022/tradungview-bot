@@ -45,7 +45,7 @@ def webhook():
     global position_open
     data = request.get_json()
     print(data)
-    
+
     if position_open:
         if "closelong" in data['strategy.order.action']:
             close_position(data)
@@ -53,46 +53,46 @@ def webhook():
             close_position(data)
     else:
         if "long" in data['strategy.order.action']:
-            open_position(data, "long")
+            open_position(data, "long", float(data['volume']))
         elif "short" in data['strategy.order.action']:
-            open_position(data, "short")
-            
+            open_position(data, "short", float(data['volume']))
+
     return jsonify({})
 
-def open_position(data, side):
+def open_position(data, side, volume):
     global position_open
-    
+
     symbol = data['ticker']
     exchange = data['exchange'].lower()
-    
+
     if exchange in exchanges:
         ex = exchanges[exchange]
-        
+
         if side == "long":
-            ex.create_market_buy_order(symbol, data['volume'])
+            ex.create_market_buy_order(symbol, volume)
         elif side == "short":
-            ex.create_market_sell_order(symbol, data['volume'])
-        
+            ex.create_market_sell_order(symbol, volume)
+
         position_open = True
         print(f"Opened {side} position on {exchange}: {symbol}")
 
 def close_position(data):
     global position_open
-    
+
     symbol = data['ticker']
     exchange = data['exchange'].lower()
-    
+
     if exchange in exchanges:
         ex = exchanges[exchange]
-        
+
         if "long" in data['strategy.order.action']:
             ex.create_market_sell_order(symbol, data['volume'])
         elif "short" in data['strategy.order.action']:
             ex.create_market_buy_order(symbol, data['volume'])
-            
+
         position_open = False
         print(f"Closed position on {exchange}: {symbol}")
-        
+
 @app.route('/')
 def home():
     return render_template('index.html')
