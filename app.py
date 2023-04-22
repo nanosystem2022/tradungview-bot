@@ -31,7 +31,8 @@ if config['EXCHANGES']['binanceusdm']['ENABLED']:
                 'public': 'https://testnet.binance.vision/api',
                 'private': 'https://testnet.binance.vision/api',
                 'fapiPublic': 'https://testnet.binancefuture.com/fapi',
-                'fapiPrivate': 'https://testnet.binancefuture.com/fapi'
+                'fapiPrivate': 'https://testnet.binancefuture.com/fapi',
+                'fapiData': 'https://testnet.binancefuture.com/futures/data'
             }
         }
 
