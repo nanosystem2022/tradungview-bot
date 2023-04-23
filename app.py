@@ -10,35 +10,33 @@ with open("config.json") as config_file:
     config = json.load(config_file)
 
 # بررسی تنظیمات و ایجاد نمونه‌های صرافی‌ها
-exchanges = {}
-if config['EXCHANGES']['BYBIT']['ENABLED']:
-    bybit = ccxt.bybit({
-        'apiKey': config['EXCHANGES']['BYBIT']['API_KEY'],
-        'secret': config['EXCHANGES']['BYBIT']['API_SECRET'],
-    })
-    exchanges['bybit'] = bybit
+binance = ccxt.binanceusdm({
+    'apiKey': config['EXCHANGES']['binanceusdm']['API_KEY'],
+    'secret': config['EXCHANGES']['binanceusdm']['API_SECRET'],
+    'enableRateLimit': True,
+    'options': {'defaultType': 'future'}
+})
 
-if config['EXCHANGES']['binanceusdm']['ENABLED']:
-    binance_options = {
-        'apiKey': config['EXCHANGES']['binanceusdm']['API_KEY'],
-        'secret': config['EXCHANGES']['binanceusdm']['API_SECRET'],
-        'options': {'defaultType': 'future'}
+if config['EXCHANGES']['binanceusdm']['TESTNET']:
+    binance.urls['api'] = {
+        'public': 'https://testnet.binancefuture.com/fapi/v1',
+        'private': 'https://testnet.binancefuture.com/fapi/v1',
+        'fapiPublic': 'https://testnet.binancefuture.com/fapi/v1',
+        'fapiPrivate': 'https://testnet.binancefuture.com/fapi/v1'
     }
 
-    if config['EXCHANGES']['binanceusdm']['TESTNET']:
-        binance_options['urls'] = {
-            'api': {
-                'public': 'https://testnet.binance.vision/api',
-                'private': 'https://testnet.binance.vision/api',
-                'fapiPublic': 'https://testnet.binancefuture.com/fapi',
-                'fapiPrivate': 'https://testnet.binancefuture.com/fapi'
-            }
-        }
+bybit = ccxt.bybit({
+    'apiKey': config['EXCHANGES']['BYBIT']['API_KEY'],
+    'secret': config['EXCHANGES']['BYBIT']['API_SECRET'],
+    'enableRateLimit': True,
+})
 
-    binance = ccxt.binance(binance_options)
-    exchanges['binance'] = binance
+if config['EXCHANGES']['BYBIT']['ENABLED']:
+    bybit.urls['api'] = bybit.urls['test']
 
-position_open = False
+app = Flask(__name__)
+
+trade_lock = threading.Lock()
 
 @app.route('/webhook', methods=['POST'])
 def webhook():
