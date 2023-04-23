@@ -1,109 +1,82 @@
-import os
-import json
-from flask import Flask, request, jsonify, render_template
 import ccxt
+import json
+import logging
+from flask import Flask, request
 
 app = Flask(__name__)
+logging.basicConfig(level=logging.INFO)
 
-# خواندن تنظیمات از فایل config.json
-with open("config.json") as config_file:
-    config = json.load(config_file)
+USE_BINANCE_TESTNET = True  # Set to False to use the real Binance environment
 
-# بررسی تنظیمات و ایجاد نمونه‌های صرافی‌ها
-exchanges = {}
-if config['EXCHANGES']['BYBIT']['ENABLED']:
-    bybit = ccxt.bybit({
-        'apiKey': config['EXCHANGES']['BYBIT']['API_KEY'],
-        'secret': config['EXCHANGES']['BYBIT']['API_SECRET'],
-    })
-    exchanges['bybit'] = bybit
+binance_config = {
+    'apiKey': 'YOUR_BINANCE_API_KEY',
+    'secret': 'YOUR_BINANCE_SECRET_KEY',
+    'options': {
+        'defaultType': 'future',  # Set the default type to 'future'
+    },
+}
 
-if config['EXCHANGES']['binanceusdm']['ENABLED']:
-    binance_options = {
-        'apiKey': config['EXCHANGES']['binanceusdm']['API_KEY'],
-        'secret': config['EXCHANGES']['binanceusdm']['API_SECRET'],
-        'options': {'defaultType': 'future'}
-    }
-
-    if config['EXCHANGES']['binanceusdm']['TESTNET']:
-        binance_options['urls'] = {
+if USE_BINANCE_TESTNET:
+    binance_config.update({
+        'urls': {
             'api': {
-        	'public': 'https://testnet.binancefuture.com/fapi/v1',
-        	'private': 'https://testnet.binancefuture.com/fapi/v1',
-        	'fapiPublic': 'https://testnet.binancefuture.com/fapi/v1',
-        	'fapiPrivate': 'https://testnet.binancefuture.com/fapi/v1'
+                'public': 'https://testnet.binancefuture.com',
+                'private': 'https://testnet.binancefuture.com',
             }
-        }
+        },
+    })
 
-    binance = ccxt.binance(binance_options)
-    exchanges['binance'] = binance
+binance = ccxt.binance(binance_config)
 
-position_open = False
+bybit = ccxt.bybit({
+    'apiKey': 'YOUR_BYBIT_API_KEY',
+    'secret': 'YOUR_BYBIT_SECRET_KEY',
+})
 
 @app.route('/webhook', methods=['POST'])
 def webhook():
-    global position_open
     data = request.get_json()
-    print(data)
-    
-    if position_open:
-        if "closelong" in data['strategy.order.action']:
-            close_position(data)
-        elif "closeshort" in data['strategy.order.action']:
-            close_position(data)
-    else:
-        if "long" in data['strategy.order.action']:
-            open_position(data, "long")
-        elif "short" in data['strategy.order.action']:
-            open_position(data, "short")
-            
-    return jsonify({})
+    logging.info(f"Received data: {data}")
 
-def open_position(data, side):
-    global position_open
-    
-    symbol = data['ticker']
-    exchange = data['exchange'].lower()
-    
-    if exchange in exchanges:
-        ex = exchanges[exchange]
-        
-        if side == "long":
-            ex.create_market_buy_order(symbol, data['volume'])
-        elif side == "short":
-            ex.create_market_sell_order(symbol, data['volume'])
-        
-        position_open = True
-        print(f"Opened {side} position on {exchange}: {symbol}")
+    try:
+        symbol = data['symbol']
+        trade_side = data['side']
+        trade_type = data['type']
+        quantity = data['quantity']
+        price = data['price']
 
-def close_position(data):
-    global position_open
-    
-    symbol = data['ticker']
-    exchange = data['exchange'].lower()
-    
-    if exchange in exchanges:
-        ex = exchanges[exchange]
-        
-        if "long" in data['strategy.order.action']:
-            ex.create_market_sell_order(symbol, data['volume'])
-        elif "short" in data['strategy.order.action']:
-            ex.create_market_buy_order(symbol, data['volume'])
-            
-        position_open = False
-        print(f"Closed position on {exchange}: {symbol}")
-        
-@app.route('/')
-def home():
-    return render_template('index.html')
+        if trade_type == 'market':
+            execute_market_order(binance, symbol, quantity, trade_side)
+            execute_market_order(bybit, symbol, quantity, trade_side)
+        elif trade_type == 'limit':
+            execute_limit_order(binance, symbol, quantity, price, trade_side)
+            execute_limit_order(bybit, symbol, quantity, price, trade_side)
 
-@app.errorhandler(404)
-def page_not_found(e):
-    return render_template('404.html'), 404
+    except Exception as e:
+        logging.error(f"Error processing webhook data: {e}")
+        return "error", 500
 
-@app.errorhandler(500)
-def internal_server_error(e):
-    return render_template('500.html'), 500
+    return "success", 200
+
+def execute_market_order(exchange, symbol, quantity, side):
+    try:
+        if side == 'long':
+            exchange.create_market_buy_order(symbol, quantity)
+        elif side == 'short':
+            exchange.create_market_sell_order(symbol, quantity)
+        logging.info(f"{exchange.name}: {side} market order executed for {symbol} with quantity {quantity}")
+    except Exception as e:
+        logging.error(f"{exchange.name}: Error executing {side} market order for {symbol}: {e}")
+
+def execute_limit_order(exchange, symbol, quantity, price, side):
+    try:
+        if side == 'long':
+            exchange.create_limit_buy_order(symbol, quantity, price)
+        elif side == 'short':
+            exchange.create_limit_sell_order(symbol, quantity, price)
+        logging.info(f"{exchange.name}: {side} limit order executed for {symbol} with quantity {quantity} and price {price}")
+    except Exception as e:
+        logging.error(f"{exchange.name}: Error executing {side} limit order for {symbol}: {e}")
 
 if __name__ == '__main__':
     app.run()
