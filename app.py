@@ -1,7 +1,7 @@
 import ccxt
 import json
 import logging
-from flask import Flask, request
+from flask import Flask, request, render_template
 
 app = Flask(__name__)
 logging.basicConfig(level=logging.INFO)
