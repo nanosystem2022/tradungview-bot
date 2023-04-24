@@ -1,23 +1,20 @@
 import ccxt
 import json
 import logging
-from flask import Flask, request, render_template
+from flask import Flask, request
 
 app = Flask(__name__)
 logging.basicConfig(level=logging.INFO)
 
-with open("config.json") as f:
-    config = json.load(f)
+USE_BINANCE_TESTNET = True  # Set to False to use the real Binance environment
 
 binance_config = {
-    'apiKey': config["EXCHANGES"]["binanceusdm"]["API_KEY"],
-    'secret': config["EXCHANGES"]["binanceusdm"]["API_SECRET"],
+    'apiKey': 'f70c56831d0bb0a5e65fe85ff621964ad88b9a260f2d47128a88f4c4288baba9',
+    'secret': 'da3eecbb296139fd418ec24f4558f4f37c3ddcdfa33ade3594890c494022dc5e',
     'options': {
         'defaultType': 'future',  # Set the default type to 'future'
     },
 }
-
-USE_BINANCE_TESTNET = config["EXCHANGES"]["binanceusdm"]["TESTNET"]
 
 if USE_BINANCE_TESTNET:
     binance_config.update({
@@ -33,12 +30,10 @@ if USE_BINANCE_TESTNET:
 
 binance = ccxt.binance(binance_config)
 
-bybit_config = {
-    'apiKey': config["EXCHANGES"]["BYBIT"]["API_KEY"],
-    'secret': config["EXCHANGES"]["BYBIT"]["API_SECRET"],
-}
-
-bybit = ccxt.bybit(bybit_config)
+bybit = ccxt.bybit({
+    'apiKey': 'YOUR_BYBIT_API_KEY',
+    'secret': 'YOUR_BYBIT_SECRET_KEY',
+})
 
 def execute_order(exchange, order_type, symbol, percentage, price, side):
     balance = exchange.fetch_balance({'type': 'future'})
