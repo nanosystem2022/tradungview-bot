@@ -1,82 +1,86 @@
-import ccxt
+import os
 import json
-import logging
-from flask import Flask, request
+from flask import Flask, request, render_template
+import ccxt
 
 app = Flask(__name__)
-logging.basicConfig(level=logging.INFO)
 
-USE_BINANCE_TESTNET = True  # Set to False to use the real Binance environment
+# خواندن تنظیمات از فایل config.json
+with open("config.json") as config_file:
+    config = json.load(config_file)
 
-binance_config = {
-    'apiKey': 'f70c56831d0bb0a5e65fe85ff621964ad88b9a260f2d47128a88f4c4288baba9',
-    'secret': 'da3eecbb296139fd418ec24f4558f4f37c3ddcdfa33ade3594890c494022dc5e',
-    'options': {
-        'defaultType': 'future',  # Set the default type to 'future'
-    },
-}
-
-if USE_BINANCE_TESTNET:
-    binance_config.update({
-        'urls': {
-            'api': {
-                'public': 'https://testnet.binancefuture.com/fapi/v1',
-                'private': 'https://testnet.binancefuture.com/fapi/v1',
-                'fapiPublic': 'https://testnet.binancefuture.com/fapi/v1',
-                'fapiPrivate': 'https://testnet.binancefuture.com/fapi/v1'
+# ایجاد نمونه‌های ccxt برای صرافی‌ها
+exchanges = {}
+open_orders = {}
+for exchange_name, exchange_config in config["EXCHANGES"].items():
+    if exchange_config["ENABLED"]:
+        params = {}
+        if exchange_name.lower() == "binance" and exchange_config["TESTNET"]:
+            params = {
+                'options': {'defaultMarket': 'future'},
+                'rateLimit': 200,
+                'enableRateLimit': True,
+                'urls': {
+                    'api': {
+                        'public': 'https://testnet.binancefuture.com/fapi/v1',
+                        'private': 'https://testnet.binancefuture.com/fapi/v1',
+                        'v2Public': 'https://testnet.binancefuture.com/fapi/v2',
+                        'v2Private': 'https://testnet.binancefuture.com/fapi/v2'
+                    }
+                }
             }
-        },
-    })
+        exchanges[exchange_name.lower()] = getattr(ccxt, exchange_name.lower())({
+            'apiKey': exchange_config["API_KEY"],
+            'secret': exchange_config["API_SECRET"],
+            **params
+        })
+        open_orders[exchange_name.lower()] = None
 
-binance = ccxt.binance(binance_config)
-
-bybit = ccxt.bybit({
-    'apiKey': 'YOUR_BYBIT_API_KEY',
-    'secret': 'YOUR_BYBIT_SECRET_KEY',
-})
-
-def execute_order(exchange, order_type, symbol, percentage, price, side):
-    balance = exchange.fetch_balance({'type': 'future'})
-    base_currency = symbol.split('/')[0]
-    
-    if base_currency in balance['total']:
-        total_balance = balance['total'][base_currency]
-        quantity = total_balance * (percentage / 100)
-
-        if order_type == 'market':
-            if side == 'long':
-                exchange.create_market_buy_order(symbol, quantity)
-            elif side == 'short':
-                exchange.create_market_sell_order(symbol, quantity)
-        elif order_type == 'limit':
-            if side == 'long':
-                exchange.create_limit_buy_order(symbol, quantity, price)
-            elif side == 'short':
-                exchange.create_limit_sell_order(symbol, quantity, price)
-        logging.info(f"{exchange.name}: {side} {order_type} order executed for {symbol} with quantity {quantity} and price {price}")
-    else:
-        logging.error(f"{exchange.name}: Unable to find balance for {base_currency}")
+def get_usdt_balance(exchange):
+    balance = exchange.fetch_balance(params={"type": "future"})
+    usdt_balance = balance.get('USDT', {}).get('free', 0)
+    return usdt_balance
 
 @app.route('/webhook', methods=['POST'])
 def webhook():
     data = request.get_json()
-    logging.info(f"Received data: {data}")
+    
+    # پردازش سیگنال‌های تریدینگ ویو
+    exchange = data['exchange']
+    command = data.get('command', 'open')
+    
+    if exchange in exchanges:
+        if command in ['closelong', 'closeshort']:
+            if open_orders[exchange] is not None:
+                order_id = open_orders[exchange]
+                exchanges[exchange].cancel_order(order_id)
+                open_orders[exchange] = None
+                return f"معامله {order_id} بسته شد"
+            else:
+                return "هیچ معامله‌ای برای بستن وجود ندارد"
+        elif command == 'open':
+            if open_orders[exchange] is None:
+                symbol = data['symbol']
+                side = data['side']
+                amount = get_usdt_balance(exchanges[exchange])
+                order = exchanges[exchange].create_market_order(side, symbol, amount)
+                open_orders[exchange] = order['id']
+                return f"معامله باز شده: {order}"
+            else:
+                return "معامله‌ای در حال انجام است. لطفا قبل از باز کردن معامله جدید، معامله قبلی را ببندید"
+    else:
+        return "صرافی نامعتبر است"
 
-    try:
-        symbol = data['symbol']
-        trade_side = data['side']
-        trade_type = data['type']
-        percentage = data['percentage']
-        price = data['price']
+# این تابع خطای 404 را مدیریت می‌کند
+@app.errorhandler(404)
+def not_found_error(error):
+    return render_template('404.html'), 404
 
-        execute_order(binance, trade_type, symbol, percentage, price, trade_side)
-        execute_order(bybit, trade_type, symbol, percentage, price, trade_side)
-
-    except Exception as e:
-        logging.error(f"Error processing webhook data: {e}")
-        return "error", 500
-
-    return "success", 200
+# این تابع خطای 500 را مدیریت می‌کند
+@app.errorhandler(500)
+def internal_error(error):
+    # اینجا می‌توانید کدی برای ثبت خطا در سیستم خود اضافه کنید
+    return render_template('500.html'), 500
 
 if __name__ == '__main__':
     app.run()
