@@ -1,97 +1,54 @@
+import os
 import json
 import ccxt
-from flask import Flask, request, jsonify
-from functools import wraps
+from flask import Flask, request
 
 app = Flask(__name__)
 
-with open("config.json") as config_file:
+with open('config.json', 'r') as config_file:
     config = json.load(config_file)
 
-def init_exchange(exchange_id, exchange_config):
-    if exchange_config.get("TESTNET"):
-        if exchange_id == "binance":
-            exchange = ccxt.binance({
-                "apiKey": exchange_config["API_KEY"],
-                "secret": exchange_config["API_SECRET"],
-                "options": {
-                    "defaultType": "future"
-                },
-                "urls": {
-                    "api": {
-                        "fapiPublic": "https://testnet.binancefuture.com/fapi/v1",
-                        "fapiPrivate": "https://testnet.binancefuture.com/fapi/v1"
-                    }
-                }
-            })
-        else:
-            raise ValueError(f"Testnet not supported for '{exchange_id}'")
-    else:
-        exchange = getattr(ccxt, exchange_id)(exchange_config)
+exchanges = {}
+for name, settings in config['EXCHANGES'].items():
+    if settings['ENABLED']:
+        exchange_class = getattr(ccxt, name)
+        exchange = exchange_class({
+            'apiKey': settings['API_KEY'],
+            'secret': settings['API_SECRET'],
+            'enableRateLimit': True
+        })
+        if settings.get('TESTNET'):
+            exchange.set_sandbox_mode(True)
+        exchanges[name] = exchange
 
-    return exchange
+position_open = False
 
-exchanges = {
-    exchange_id: init_exchange(exchange_id, exchange_config)
-    for exchange_id, exchange_config in config["EXCHANGES"].items()
-    if exchange_config["ENABLED"]
-}
+@app.route('/webhook', methods=['POST'])
+def webhook():
+    global position_open
+    data = request.get_json()
+    if data['type'] == 'closelong' or data['type'] == 'closeshort':
+        close_position(data)
+    elif not position_open:
+        open_position(data)
+    return '', 200
 
-def exchange_configured(f):
-    @wraps(f)
-    def decorated_function(*args, **kwargs):
-        exchange_id = request.args.get("exchange_id")
-        if exchange_id is None:
-            return jsonify({"error": "Exchange ID is missing"}), 400
+def open_position(data):
+    global position_open
+    side = 'long' if data['type'] == 'long' else 'short'
+    amount = data['amount']
+    for name, exchange in exchanges.items():
+        # TODO: Calculate the amount based on your account balance and the percentage you want to use
+        exchange.create_market_order('BTC/USDT', side, amount)
+    position_open = True
 
-        exchange = exchanges.get(exchange_id)
-        if exchange is None:
-            return jsonify({"error": f"Exchange '{exchange_id}' not configured"}), 400
-        return f(exchange, *args, **kwargs)
-    return decorated_function
+def close_position(data):
+    global position_open
+    side = 'close_long' if data['type'] == 'closelong' else 'close_short'
+    for name, exchange in exchanges.items():
+        # TODO: Close the position based on the side
+        pass
+    position_open = False
 
-@app.route("/webhook", methods=["POST"])
-@exchange_configured
-def webhook(exchange):
-    signal = request.json
-    try:
-        order = execute_order(exchange, signal)
-    except ValueError as e:
-        return jsonify({"error": str(e)}), 400
-    return jsonify(order.info)
-
-def execute_order(exchange, signal):
-    order_type = signal['order_type']
-    side = signal['side']
-    symbol = signal['symbol']
-    amount = signal['amount']
-    leverage = signal.get('leverage', None)
-
-    if leverage:
-        if hasattr(exchange, "set_leverage"):
-            exchange.set_leverage(leverage, symbol)
-        else:
-            raise ValueError("The exchange does not support setting leverage.")
-
-    if order_type == 'market':
-        if side == 'buy' or side == 'long':
-            order = exchange.create_market_buy_order(symbol, amount)
-        elif side == 'sell' or side == 'short':
-            order = exchange.create_market_sell_order(symbol, amount)
-        else:
-            raise ValueError(f"Invalid side '{side}' in signal")
-    elif order_type == 'limit':
-        price = signal['price']
-        if side == 'buy' or side == 'long':
-            order = exchange.create_limit_buy_order(symbol, amount, price)
-        elif side == 'sell' or side == 'short':
-            order = exchange.create_limit_sell_order(symbol, amount, price)
-        else:
-            raise ValueError(f"Invalid side '{side}' in signal")
-    else:
-        raise ValueError(f"Invalid order type '{order_type}' in signal")
-
-    return order
-
-if __name__ == "__main__":
+if __name__ == '__main__':
     app.run()
