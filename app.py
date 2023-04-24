@@ -40,9 +40,13 @@ exchanges = {
 def exchange_configured(f):
     @wraps(f)
     def decorated_function(*args, **kwargs):
-        exchange = exchanges.get(request.args.get("exchange_id"))
+        exchange_id = request.args.get("exchange_id")
+        if exchange_id is None:
+            return jsonify({"error": "Exchange ID is missing"}), 400
+
+        exchange = exchanges.get(exchange_id)
         if exchange is None:
-            return jsonify({"error": "Exchange not configured"}), 400
+            return jsonify({"error": f"Exchange '{exchange_id}' not configured"}), 400
         return f(exchange, *args, **kwargs)
     return decorated_function
 
