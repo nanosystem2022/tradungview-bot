@@ -1,86 +1,93 @@
-import os
 import json
-from flask import Flask, request, render_template
 import ccxt
+from flask import Flask, request, jsonify
+from functools import wraps
 
 app = Flask(__name__)
 
-# خواندن تنظیمات از فایل config.json
 with open("config.json") as config_file:
     config = json.load(config_file)
 
-# ایجاد نمونه‌های ccxt برای صرافی‌ها
-exchanges = {}
-open_orders = {}
-for exchange_name, exchange_config in config["EXCHANGES"].items():
-    if exchange_config["ENABLED"]:
-        params = {}
-        if exchange_name.lower() == "binance" and exchange_config["TESTNET"]:
-            params = {
-                'options': {'defaultMarket': 'future'},
-                'rateLimit': 200,
-                'enableRateLimit': True,
-                'urls': {
-                    'api': {
-                        'public': 'https://testnet.binancefuture.com/fapi/v1',
-                        'private': 'https://testnet.binancefuture.com/fapi/v1',
-                        'v2Public': 'https://testnet.binancefuture.com/fapi/v2',
-                        'v2Private': 'https://testnet.binancefuture.com/fapi/v2'
+def init_exchange(exchange_id, exchange_config):
+    if exchange_config.get("TESTNET"):
+        if exchange_id == "binance":
+            exchange = ccxt.binance({
+                "apiKey": exchange_config["API_KEY"],
+                "secret": exchange_config["API_SECRET"],
+                "options": {
+                    "defaultType": "future"
+                },
+                "urls": {
+                    "api": {
+                        "fapiPublic": "https://testnet.binancefuture.com/fapi/v1",
+                        "fapiPrivate": "https://testnet.binancefuture.com/fapi/v1"
                     }
                 }
-            }
-        exchanges[exchange_name.lower()] = getattr(ccxt, exchange_name.lower())({
-            'apiKey': exchange_config["API_KEY"],
-            'secret': exchange_config["API_SECRET"],
-            **params
-        })
-        open_orders[exchange_name.lower()] = None
-
-def get_usdt_balance(exchange):
-    balance = exchange.fetch_balance(params={"type": "future"})
-    usdt_balance = balance.get('USDT', {}).get('free', 0)
-    return usdt_balance
-
-@app.route('/webhook', methods=['POST'])
-def webhook():
-    data = request.get_json()
-    
-    # پردازش سیگنال‌های تریدینگ ویو
-    exchange = data['exchange']
-    command = data.get('command', 'open')
-    
-    if exchange in exchanges:
-        if command in ['closelong', 'closeshort']:
-            if open_orders[exchange] is not None:
-                order_id = open_orders[exchange]
-                exchanges[exchange].cancel_order(order_id)
-                open_orders[exchange] = None
-                return f"معامله {order_id} بسته شد"
-            else:
-                return "هیچ معامله‌ای برای بستن وجود ندارد"
-        elif command == 'open':
-            if open_orders[exchange] is None:
-                symbol = data['symbol']
-                side = data['side']
-                amount = get_usdt_balance(exchanges[exchange])
-                order = exchanges[exchange].create_market_order(side, symbol, amount)
-                open_orders[exchange] = order['id']
-                return f"معامله باز شده: {order}"
-            else:
-                return "معامله‌ای در حال انجام است. لطفا قبل از باز کردن معامله جدید، معامله قبلی را ببندید"
+            })
+        else:
+            raise ValueError(f"Testnet not supported for '{exchange_id}'")
     else:
-        return "صرافی نامعتبر است"
+        exchange = getattr(ccxt, exchange_id)(exchange_config)
 
-# این تابع خطای 404 را مدیریت می‌کند
-@app.errorhandler(404)
-def not_found_error(error):
-    return render_template('404.html'), 404
+    return exchange
 
-# این تابع خطای 500 را مدیریت می‌کند
-@app.errorhandler(500)
-def internal_error(error):
-    # اینجا می‌توانید کدی برای ثبت خطا در سیستم خود اضافه کنید
-    return render_template('500.html'), 500
+exchanges = {
+    exchange_id: init_exchange(exchange_id, exchange_config)
+    for exchange_id, exchange_config in config["EXCHANGES"].items()
+    if exchange_config["ENABLED"]
+}
 
-if __name__ == '__main__':
+def exchange_configured(f):
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        exchange = exchanges.get(request.args.get("exchange_id"))
+        if exchange is None:
+            return jsonify({"error": "Exchange not configured"}), 400
+        return f(exchange, *args, **kwargs)
+    return decorated_function
+
+@app.route("/webhook", methods=["POST"])
+@exchange_configured
+def webhook(exchange):
+    signal = request.json
+    try:
+        order = execute_order(exchange, signal)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    return jsonify(order.info)
+
+def execute_order(exchange, signal):
+    order_type = signal['order_type']
+    side = signal['side']
+    symbol = signal['symbol']
+    amount = signal['amount']
+    leverage = signal.get('leverage', None)
+
+    if leverage:
+        if hasattr(exchange, "set_leverage"):
+            exchange.set_leverage(leverage, symbol)
+        else:
+            raise ValueError("The exchange does not support setting leverage.")
+
+    if order_type == 'market':
+        if side == 'buy' or side == 'long':
+            order = exchange.create_market_buy_order(symbol, amount)
+        elif side == 'sell' or side == 'short':
+            order = exchange.create_market_sell_order(symbol, amount)
+        else:
+            raise ValueError(f"Invalid side '{side}' in signal")
+    elif order_type == 'limit':
+        price = signal['price']
+        if side == 'buy' or side == 'long':
+            order = exchange.create_limit_buy_order(symbol, amount, price)
+        elif side == 'sell' or side == 'short':
+            order = exchange.create_limit_sell_order(symbol, amount, price)
+        else:
+            raise ValueError(f"Invalid side '{side}' in signal")
+    else:
+        raise ValueError(f"Invalid order type '{order_type}' in signal")
+
+    return order
+
+if __name__ == "__main__":
     app.run()
