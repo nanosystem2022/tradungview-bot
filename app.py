@@ -1,64 +1,61 @@
+import os
+import ccxt
 import json
 from flask import Flask, request
-import ccxt
-from ccxt.base.errors import NetworkError, BadRequest, InsufficientFunds, RateLimitExceeded
 
 app = Flask(__name__)
 
-with open("config.json") as config_file:
-    config = json.load(config_file)
+# خواندن اطلاعات از فایل config.json
+with open('config.json') as f:
+    config = json.load(f)
 
-exchanges = {
-    "binanceusdm": ccxt.binanceusdm({
-        "apiKey": config["EXCHANGES"]["binanceusdm"]["API_KEY"],
-        "secret": config["EXCHANGES"]["binanceusdm"]["API_SECRET"],
-        "enableRateLimit": True,
-        "options": {"defaultType": "future"},
-        "test": config["EXCHANGES"]["binanceusdm"]["TESTNET"],
-        "urls": {
-            "api": {
-                "public": "https://testnet.binancefuture.com/fapi/v1/",
-                "private": "https://testnet.binancefuture.com/fapi/v1/"
-            } if config["EXCHANGES"]["binanceusdm"]["TESTNET"] else {}
-        }
-    }),
-    "bybit": ccxt.bybit({
-        "apiKey": config["EXCHANGES"]["BYBIT"]["API_KEY"],
-        "secret": config["EXCHANGES"]["BYBIT"]["API_SECRET"],
-        "enableRateLimit": True,
-    }),
-}
+exchanges = {}
 
-@app.route("/webhook", methods=["POST"])
+# تنظیمات برای صرافی Bybit
+if config['EXCHANGES']['BYBIT']['ENABLED']:
+    exchanges['bybit'] = ccxt.bybit({
+        'apiKey': config['EXCHANGES']['BYBIT']['API_KEY'],
+        'secret': config['EXCHANGES']['BYBIT']['API_SECRET'],
+    })
+
+# تنظیمات برای صرافی Binance
+if config['EXCHANGES']['binanceusdm']['ENABLED']:
+    exchanges['binanceusdm'] = ccxt.binance({
+        'apiKey': config['EXCHANGES']['binanceusdm']['API_KEY'],
+        'secret': config['EXCHANGES']['binanceusdm']['API_SECRET'],
+        'options': {
+            'defaultType': 'future',
+        },
+    })
+    if config['EXCHANGES']['binanceusdm']['TESTNET']:
+        exchanges['binanceusdm'].set_sandbox_mode(True)
+
+@app.route('/webhook', methods=['POST'])
 def webhook():
-    data = request.json
+    data = json.loads(request.data)
 
-    if "side" not in data or "symbol" not in data or "price" not in data:
-        return "Missing required data in the webhook payload", 400
+    # دریافت اطلاعات سیگنال از وب هوک
+    signal = data['signal']
+    trading_pair = data['trading_pair']
+    side = data['side']
+    amount = data['amount']
 
-    side = data["side"].lower()
-    symbol = data["symbol"]
-    price = float(data["price"])
+    if signal in exchanges:
+        place_order(signal, trading_pair, side, amount)
 
-    for exchange_id, exchange in exchanges.items():
-        if config["EXCHANGES"][exchange_id]["ENABLED"]:
-            try:
-                market = exchange.load_markets()
-                market_data = market[symbol]
-                amount = calculate_amount(price, market_data)
+    return {
+        "message": "Order placed successfully."
+    }
 
-                order = exchange.create_market_order(symbol, side, amount)
-                print(f"Order placed on {exchange_id}: {order}")
+def place_order(exchange, trading_pair, side, amount):
+    # ایجاد سفارش در صرافی مورد نظر
+    order = exchanges[exchange].create_order(
+        symbol=trading_pair,
+        side=side,
+        type='market',
+        amount=amount
+    )
+    print(f"{exchange.capitalize()} order: ", order)
 
-            except (NetworkError, BadRequest, InsufficientFunds, RateLimitExceeded) as e:
-                print(f"Error on {exchange_id}: {e}")
-
-    return "OK", 200
-
-def calculate_amount(price, market_data):
-    min_cost = market_data["limits"]["cost"]["min"]
-    amount = min_cost / price
-    return max(amount, market_data["limits"]["amount"]["min"])
-
-if __name__ == "__main__":
-    app.run()
+if __name__ == '__main__':
+    app.run(host='0.0.0.0')
