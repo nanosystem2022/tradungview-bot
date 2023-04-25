@@ -28,7 +28,12 @@ if config['EXCHANGES']['binanceusdm']['ENABLED']:
         },
     })
     if config['EXCHANGES']['binanceusdm']['TESTNET']:
-        exchanges['binanceusdm'].set_sandbox_mode(True)
+        # تنظیم آدرس API برای محیط TESTNET
+        exchanges['binanceusdm'].urls['api'] = {
+            'public': 'https://testnet.binancefuture.com/fapi/v1',
+            'private': 'https://testnet.binancefuture.com/fapi/v1',
+            'testnet': 'https://testnet.binancefuture.com/fapi/v1'
+        }
 
 @app.route('/webhook', methods=['POST'])
 def webhook():
