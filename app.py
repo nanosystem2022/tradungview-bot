@@ -32,9 +32,12 @@ exchanges = {
 @app.route("/webhook", methods=["POST"])
 def webhook():
     data = request.json
-    signal = data["signal"]
+
+    if "side" not in data or "symbol" not in data or "price" not in data:
+        return "Missing required data in the webhook payload", 400
+
+    side = data["side"].lower()
     symbol = data["symbol"]
-    side = "buy" if signal == "long" else "sell"
     price = float(data["price"])
 
     for exchange_id, exchange in exchanges.items():
