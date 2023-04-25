@@ -1,7 +1,7 @@
 import os
 import ccxt
 import json
-from flask import Flask, request
+from flask import Flask, request, jsonify
 
 app = Flask(__name__)
 
@@ -37,22 +37,38 @@ if config['EXCHANGES']['binanceusdm']['ENABLED']:
 
 @app.route('/webhook', methods=['POST'])
 def webhook():
-    data = json.loads(request.data)
+    if request.method == 'POST':
+        data = request.get_json()
+        
+        if data is not None:
+            signal = data.get('signal', None)
+            trading_pair = data.get('trading_pair', None)
+            side = data.get('side', None)
+            percent_of_balance = data.get('percent_of_balance', None)
 
-    # دریافت اطلاعات سیگنال از وب هوک
-    signal = data['signal']
-    trading_pair = data['trading_pair']
-    side = data['side']
-    amount = data['amount']
+            if signal is not None and trading_pair is not None and side is not None and percent_of_balance is not None:
+                if signal in exchanges:
+                    place_order(signal, trading_pair, side, percent_of_balance)
 
-    if signal in exchanges:
-        place_order(signal, trading_pair, side, amount)
+                    return jsonify({"message": "Order placed successfully."})
+                else:
+                    return jsonify({"message": "Invalid signal."})
+            else:
+                return jsonify({"message": "Missing required data."})
+        else:
+            return jsonify({"message": "No data received."})
 
-    return {
-        "message": "Order placed successfully."
-    }
+    return jsonify({"message": "Invalid request method."})
 
-def place_order(exchange, trading_pair, side, amount):
+def place_order(exchange, trading_pair, side, percent_of_balance):
+    # دریافت موجودی کاربر
+    balance = exchanges[exchange].fetch_balance()
+
+    # محاسبه مقدار معامله بر اساس درصد موجودی
+    asset = trading_pair.split('/')[0]  # ارز اصلی (مثلا BTC در BTC/USDT)
+    asset_balance = balance['total'][asset]
+    amount = asset_balance * percent_of_balance / 100
+
     # ایجاد سفارش در صرافی مورد نظر
     order = exchanges[exchange].create_order(
         symbol=trading_pair,
