@@ -1,101 +1,86 @@
+import os
 import json
+from flask import Flask, request, render_template
 import ccxt
-from flask import Flask, request
-
-# بارگذاری تنظیمات از فایل config.json
-with open('config.json', 'r') as f:
-    config = json.load(f)
 
 app = Flask(__name__)
 
-# ساخت نمونه‌های ccxt برای صرافی‌های فعال
+# خواندن تنظیمات از فایل config.json
+with open("config.json") as config_file:
+    config = json.load(config_file)
+
+# ایجاد نمونه‌های ccxt برای صرافی‌ها
 exchanges = {}
-for exchange_id, exchange_config in config['EXCHANGES'].items():
-    if exchange_config['ENABLED']:
-        exchange_class = getattr(ccxt, exchange_id)
-        exchange = exchange_class({
-            'apiKey': exchange_config['API_KEY'],
-            'secret': exchange_config['API_SECRET'],
-            'enableRateLimit': True,
-        })
-
-        # افزودن حالت تستنت برای بایننس
-        if exchange_id == 'binanceusdm' and exchange_config.get('TESTNET', False):
-            exchange.set_sandbox_mode(True)
-            exchange.urls['api'] = {
-                'fapiPublic': 'https://testnet.binancefuture.com/fapi/v1',
-                'fapiPrivate': 'https://testnet.binancefuture.com/fapi/v1',
-                'fapiPrivateV2': 'https://testnet.binancefuture.com/fapi/v2',
-                'fapiData': 'https://testnet.binancefuture.com/futures/data'
+open_orders = {}
+for exchange_name, exchange_config in config["EXCHANGES"].items():
+    if exchange_config["ENABLED"]:
+        params = {}
+        if exchange_name.lower() == "binance" and exchange_config["TESTNET"]:
+            params = {
+                'options': {'defaultMarket': 'future'},
+                'rateLimit': 200,
+                'enableRateLimit': True,
+                'urls': {
+                    'api': {
+                        'public': 'https://testnet.binancefuture.com/fapi/v1',
+                        'private': 'https://testnet.binancefuture.com/fapi/v1',
+                        'v2Public': 'https://testnet.binancefuture.com/fapi/v2',
+                        'v2Private': 'https://testnet.binancefuture.com/fapi/v2'
+                    }
+                }
             }
+        exchanges[exchange_name.lower()] = getattr(ccxt, exchange_name.lower())({
+            'apiKey': exchange_config["API_KEY"],
+            'secret': exchange_config["API_SECRET"],
+            **params
+        })
+        open_orders[exchange_name.lower()] = None
 
-        exchanges[exchange_id] = exchange
-
-def get_usable_balance(exchange, symbol):
-    try:
-        balance = exchange.fetch_balance({'type': 'future'})
-        base_currency = symbol.split('/')[0]
-        quote_currency = symbol.split('/')[1]
-
-        if exchange.id == 'binanceusdm':
-            return balance['info']['assets'][0]['walletBalance']
-        else:
-            return balance[quote_currency]['free']
-
-    except Exception as e:
-        print(f"خطا در دریافت موجودی از {exchange.id}: {e}")
-        return None
-
-open_order = False
+def get_usdt_balance(exchange):
+    balance = exchange.fetch_balance(params={"type": "future"})
+    usdt_balance = balance.get('USDT', {}).get('free', 0)
+    return usdt_balance
 
 @app.route('/webhook', methods=['POST'])
 def webhook():
-    global open_order
-    data = request.get_json(force=True)
-    signal = data['signal']
-    symbol = data['symbol']
-
-    if signal == 'closelong' or signal == 'closeshort':
-        # بستن معامله
-        if not open_order:
-            print("هیچ معامله‌ای برای بستن وجود ندارد.")
-            return {"status": "no_open_order"}
-
-        for exchange_id, exchange in exchanges.items():
-            try:
-                # بستن معامله در صرافی
-                side = 'sell' if signal == 'closelong' else 'buy'
-                response = exchange.create_market_order(symbol, side, 1)  # مقدار '1' را باید با مقدار معامله باز جایگزین کنید.
-                print(f"معامله با موفقیت در {exchange_id} بسته شد: {response}")
-                open_order = False
-            except Exception as e:
-                print(f"خطا در بستن معامله در {exchange_id}: {e}")
-
+    data = request.get_json()
+    
+    # پردازش سیگنال‌های تریدینگ ویو
+    exchange = data['exchange']
+    command = data.get('command', 'open')
+    
+    if exchange in exchanges:
+        if command in ['closelong', 'closeshort']:
+            if open_orders[exchange] is not None:
+                order_id = open_orders[exchange]
+                exchanges[exchange].cancel_order(order_id)
+                open_orders[exchange] = None
+                return f"معامله {order_id} بسته شد"
+            else:
+                return "هیچ معامله‌ای برای بستن وجود ندارد"
+        elif command == 'open':
+            if open_orders[exchange] is None:
+                symbol = data['symbol']
+                side = data['side']
+                amount = get_usdt_balance(exchanges[exchange])
+                order = exchanges[exchange].create_market_order(side, symbol, amount)
+                open_orders[exchange] = order['id']
+                return f"معامله باز شده: {order}"
+            else:
+                return "معامله‌ای در حال انجام است. لطفا قبل از باز کردن معامله جدید، معامله قبلی را ببندید"
     else:
-        if open_order:
-            print("یک معامله باز است. معامله جدید باز نمی‌کنیم.")
-            return {"status": "order_already_open"}
+        return "صرافی نامعتبر است"
 
-        side = data['side']
-        percentage_of_balance = float(data['percentage_of_balance'])
+# این تابع خطای 404 را مدیریت می‌کند
+@app.errorhandler(404)
+def not_found_error(error):
+    return render_template('404.html'), 404
 
-        # انجام معامله در صرافی‌های فعال
-        for exchange_id, exchange in exchanges.items():
-            try:
-                balance = get_usable_balance(exchange, symbol)
-                if balance is None:
-                    continue
-
-                amount = (balance * percentage_of_balance) / 100
-                market = exchange.markets[symbol]
-                params = {'symbol': symbol, 'side': side, 'type': 'market', 'quantity': amount}
-                response = exchange.create_order(**params)
-                print(f"معامله با موفقیت در {exchange_id} انجام شد: {response}")
-                open_order = True
-            except Exception as e:
-                print(f"خطا در انجام معامله در {exchange_id}: {e}")
-
-    return {"status": "success"}
+# این تابع خطای 500 را مدیریت می‌کند
+@app.errorhandler(500)
+def internal_error(error):
+    # اینجا می‌توانید کدی برای ثبت خطا در سیستم خود اضافه کنید
+    return render_template('500.html'), 500
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000)
+    app.run()
