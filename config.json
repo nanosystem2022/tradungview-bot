@@ -52,11 +52,8 @@ open_order = False
 def webhook():
     global open_order
     data = request.get_json(force=True)
-    signal = data.get('signal', None)
+    signal = data['signal']
     symbol = data['symbol']
-
-    if signal is None:
-        return {"status": "error", "message": "Signal not found in the request."}
 
     if signal == 'closelong' or signal == 'closeshort':
         # بستن معامله
@@ -69,7 +66,7 @@ def webhook():
                 # بستن معامله در صرافی
                 side = 'sell' if signal == 'closelong' else 'buy'
                 response = exchange.create_market_order(symbol, side, 1)  # مقدار '1' را باید با مقدار معامله باز جایگزین کنید.
-                print(f"معامله با موفقیت در {exchange id} بسته شد: {response}")
+                print(f"معامله با موفقیت در {exchange_id} بسته شد: {response}")
                 open_order = False
             except Exception as e:
                 print(f"خطا در بستن معامله در {exchange_id}: {e}")
@@ -101,4 +98,4 @@ def webhook():
     return {"status": "success"}
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000)
+    app.run(host='0.0.0.0', port=10000)
