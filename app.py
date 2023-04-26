@@ -1,7 +1,7 @@
 import os
 import ccxt
 import json
-from flask import Flask, request, jsonify
+from flask import Flask, request, render_template
 
 app = Flask(__name__)
 
@@ -35,32 +35,39 @@ if config['EXCHANGES']['binanceusdm']['ENABLED']:
             'testnet': 'https://testnet.binancefuture.com/fapi/v1'
         }
 
+open_order = None
+
 @app.route('/webhook', methods=['POST'])
 def webhook():
-    if request.method == 'POST':
-        data = request.get_json()
-        
-        if data is not None:
-            signal = data.get('signal', None)
-            trading_pair = data.get('trading_pair', None)
-            side = data.get('side', None)
-            percent_of_balance = data.get('percent_of_balance', None)
+    global open_order
+    data = json.loads(request.data)
 
-            if signal is not None and trading_pair is not None and side is not None and percent_of_balance is not None:
-                if signal in exchanges:
-                    place_order(signal, trading_pair, side, percent_of_balance)
+    # دریافت اطلاعات سیگنال از وب هوک
+    signal = data['signal']
+    trading_pair = data['trading_pair']
+    side = data['side']
+    percent_of_balance = data['percent_of_balance']
 
-                    return jsonify({"message": "Order placed successfully."})
-                else:
-                    return jsonify({"message": "Invalid signal."})
-            else:
-                return jsonify({"message": "Missing required data."})
-        else:
-            return jsonify({"message": "No data received."})
+    if signal == "closelong" or signal == "closeshort":
+        close_order()
+        return {
+            "message": "Open order closed."
+        }
 
-    return jsonify({"message": "Invalid request method."})
+    if open_order is None:
+        if signal in exchanges:
+            open_order = place_order(signal, trading_pair, side, percent_of_balance)
+            return {
+                "message": "Order placed successfully."
+            }
+    else:
+        return {
+            "message": "An order is already open. Waiting for it to close."
+        }
 
 def place_order(exchange, trading_pair, side, percent_of_balance):
+    global open_order
+
     # دریافت موجودی کاربر
     balance = exchanges[exchange].fetch_balance()
 
@@ -69,14 +76,42 @@ def place_order(exchange, trading_pair, side, percent_of_balance):
     asset_balance = balance['total'][asset]
     amount = asset_balance * percent_of_balance / 100
 
+    # تعیین نوع معامله بر اساس side
+   
+    if side.lower() == "long":
+        order_type = "buy"
+    elif side.lower() == "short":
+        order_type = "sell"
+    else:
+        raise ValueError("Invalid side value. It must be 'long' or 'short'.")
+
     # ایجاد سفارش در صرافی مورد نظر
     order = exchanges[exchange].create_order(
         symbol=trading_pair,
-        side=side,
+        side=order_type,
         type='market',
         amount=amount
     )
     print(f"{exchange.capitalize()} order: ", order)
+    return order
+
+def close_order():
+    global open_order
+    if open_order is not None:
+        exchange = open_order['info']['exchange']
+        order_id = open_order['id']
+        symbol = open_order['symbol']
+        exchanges[exchange].cancel_order(order_id, symbol)
+        open_order = None
+        print(f"Closed order on {exchange.capitalize()}: ", order_id)
+
+@app.errorhandler(404)
+def page_not_found(e):
+    return render_template('404.html'), 404
+
+@app.errorhandler(500)
+def internal_server_error(e):
+    return render_template('500.html'), 500
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0')
