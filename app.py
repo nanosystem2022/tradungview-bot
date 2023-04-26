@@ -43,7 +43,7 @@ def webhook():
     data = json.loads(request.data)
 
     # دریافت اطلاعات سیگنال از وب هوک
-    signal = data['signal']
+    signal = data.get('signal', None)
     trading_pair = data['trading_pair']
     side = data['side']
     percent_of_balance = data['percent_of_balance']
