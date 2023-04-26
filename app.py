@@ -1,117 +1,115 @@
 import os
-import ccxt
 import json
+import ccxt
 from flask import Flask, request, render_template
+from errors import errors_bp
 
 app = Flask(__name__)
+app.register_blueprint(errors_bp)
 
-# خواندن اطلاعات از فایل config.json
-with open('config.json') as f:
-    config = json.load(f)
+# خواندن تنظیمات از فایل config.json
+with open('config.json', 'r') as config_file:
+    config = json.load(config_file)
 
+# ایجاد اتصال به صرافی‌ها
 exchanges = {}
+if config['EXCHANGES']['binanceusdm']['ENABLED']:
+    exchange_config = {
+        'apiKey': config['EXCHANGES']['binanceusdm']['API_KEY'],
+        'secret': config['EXCHANGES']['binanceusdm']['API_SECRET'],
+        'options': {'defaultType': 'future'},
+        'enableRateLimit': True
+    }
+    if config['EXCHANGES']['binanceusdm']['TESTNET']:
+        exchange_config['urls'] = {
+            'api': {
+                'public': 'https://testnet.binancefuture.com/fapi/v1',
+                'private': 'https://testnet.binancefuture.com/fapi/v1',
+                'fapiPublic': 'https://testnet.binancefuture.com/fapi/v1',
+                'fapiPrivate': 'https://testnet.binancefuture.com/fapi/v1'
+            }
+        }
+    exchanges['binanceusdm'] = ccxt.binance(exchange_config)
 
-# تنظیمات برای صرافی Bybit
 if config['EXCHANGES']['BYBIT']['ENABLED']:
     exchanges['bybit'] = ccxt.bybit({
         'apiKey': config['EXCHANGES']['BYBIT']['API_KEY'],
         'secret': config['EXCHANGES']['BYBIT']['API_SECRET'],
+        'enableRateLimit': True
     })
 
-# تنظیمات برای صرافی Binance
-if config['EXCHANGES']['binanceusdm']['ENABLED']:
-    exchanges['binanceusdm'] = ccxt.binance({
-        'apiKey': config['EXCHANGES']['binanceusdm']['API_KEY'],
-        'secret': config['EXCHANGES']['binanceusdm']['API_SECRET'],
-        'options': {
-            'defaultType': 'future',
-        },
-    })
-    if config['EXCHANGES']['binanceusdm']['TESTNET']:
-        # تنظیم آدرس API برای محیط TESTNET
-        exchanges['binanceusdm'].urls['api'] = {
-            'public': 'https://testnet.binancefuture.com/fapi/v1',
-            'private': 'https://testnet.binancefuture.com/fapi/v1',
-            'testnet': 'https://testnet.binancefuture.com/fapi/v1'
-        }
-
-open_order = None
+open_position = False
 
 @app.route('/webhook', methods=['POST'])
 def webhook():
-    global open_order
-    data = json.loads(request.data)
+    data = request.json
+    print("دریافت سیگنال:", data)
 
-    # دریافت اطلاعات سیگنال از وب هوک
-    signal = data.get('signal', None)
-    trading_pair = data['trading_pair']
+    exchange = data['exchange'].lower()
+    if exchange in exchanges:
+        execute_trade(exchanges[exchange], data)
+    else:
+        print(f"صرافی {exchange} فعال نیست.")
+
+    return {
+        'status': 'success'
+    }, 200
+
+def execute_trade(exchange, data):
+    global open_position
+
+    symbol = data['symbol']
     side = data['side']
-    percent_of_balance = data['percent_of_balance']
+    if 'percentage' in data:
+        percentage = float(data['percentage'])
+    price = float(data['price'])
 
-    if signal == "closelong" or signal == "closeshort":
-        close_order()
-        return {
-            "message": "Open order closed."
-        }
-
-    if open_order is None:
-        if signal in exchanges:
-            open_order = place_order(signal, trading_pair, side, percent_of_balance)
-            return {
-                "message": "Order placed successfully."
-            }
+    if side == 'closelong' or side == 'closeshort':
+        if open_position:
+            close_position(exchange, symbol, side)
+            open_position = False
+        else:
+            print("هیچ معامله‌ای برای بستن وجود ندارد.")
     else:
-        return {
-            "message": "An order is already open. Waiting for it to close."
-        }
+        if not open_position:
+            if 'percentage' in data:
+                # دریافت موجودی کاربر
+                balance = exchange.fetch_balance()
 
-def place_order(exchange, trading_pair, side, percent_of_balance):
-    global open_order
+                # محاسبه مقدار معامله بر اساس درصد موجودی
+                base_currency = symbol.split('/')[0]
+                quote_currency = symbol.split('/')[1]
+                available_balance = balance[quote_currency]['free']
+                amount = (percentage / 100) * available_balance / price
 
-    # دریافت موجودی کاربر
-    balance = exchanges[exchange].fetch_balance()
+            # اجرای معامله
+            if side == 'long':
+                # خرید (long) در حالت فیوچرز
+                exchange.create_market_buy_order(symbol, amount)
+                open_position = True
+            elif side == 'short':
+                # فروش (short) در حالت فیوچرز
+                exchange.create_market_sell_order(symbol, amount)
+                open_position = True
+            else:
+                print("نوع معامله نامعتبر است.")
+        else:
+            print("یک معامله باز است. لطفاً ابتدا معامله فعلی را ببندید.")
 
-    # محاسبه مقدار معامله بر اساس درصد موجودی
-    asset = trading_pair.split('/')[0]  # ارز اصلی (مثلا BTC در BTC/USDT)
-    asset_balance = balance['total'][asset]
-    amount = asset_balance * percent_of_balance / 100
-
-    # تعیین نوع معامله بر اساس side
-   
-    if side.lower() == "long":
-        order_type = "buy"
-    elif side.lower() == "short":
-        order_type = "sell"
+def close_position(exchange, symbol, side):
+    if side == 'closelong':
+        position_side = 'long'
     else:
-        raise ValueError("Invalid side value. It must be 'long' or 'short'.")
+        position_side = 'short'
 
-    # ایجاد سفارش در صرافی مورد نظر
-    order = exchanges[exchange].create_order(
-        symbol=trading_pair,
-        side=order_type,
-        type='market',
-        amount=amount
-    )
-    print(f"{exchange.capitalize()} order: ", order)
-    return order
-
-def close_order():
-    global open_order
-    if open_order is not None:
-        exchange = open_order['info']['exchange']
-        order_id = open_order['id']
-        symbol = open_order['symbol']
-        exchanges[exchange].cancel_order(order_id, symbol)
-        open_order = None
-        print(f"Closed order on {exchange.capitalize()}: ", order_id)
-
-@app.errorhandler(404)
-def page_not_found(e):
-    return render_template('404.html'), 404
-
-@app.errorhandler(500)
-def internal_server_error(e):
-    return render_template('500.html'), 500
+    if exchange == exchanges['binanceusdm']:
+        exchange.private_post_position_close({
+            'symbol': exchange.market_id(symbol),
+            'positionSide': position_side,
+            'reduceOnly': True
+        })
+    else:
+        print("بستن معامله در این صرافی پشتیبانی نمی‌شود.")
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0')
+    app.run(debug=True)
