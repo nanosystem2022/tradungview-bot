@@ -27,6 +27,13 @@ if config['EXCHANGES']['binanceusdm']['ENABLED']:
                 'private': 'https://testnet.binancefuture.com/fapi/v1',
                 'fapiPublic': 'https://testnet.binancefuture.com/fapi/v1',
                 'fapiPrivate': 'https://testnet.binancefuture.com/fapi/v1'
+            },
+            'www': 'https://testnet.binance.vision',
+            'doc': 'https://binance-docs.github.io/apidocs/testnet/en/',
+            'test': {
+                'futures': 'https://testnet.binancefuture.com',
+                'margin': 'https://testnet.binance.vision',
+                'v3': 'https://testnet.binance.vision/api'
             }
         }
     exchanges['binanceusdm'] = ccxt.binance(exchange_config)
@@ -39,6 +46,9 @@ if config['EXCHANGES']['BYBIT']['ENABLED']:
     })
 
 open_position = False
+
+# ... بقیه کد بدون تغییر
+
 
 @app.route('/webhook', methods=['POST'])
 def webhook():
