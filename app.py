@@ -8,7 +8,7 @@ app = Flask(__name__)
 app.register_blueprint(errors_bp)
 
 # خواندن تنظیمات از فایل config.json
-with open('config.json', 'r') as config_file:
+with open('config.json') as config_file:
     config = json.load(config_file)
 
 # ایجاد اتصال به صرافی‌ها
