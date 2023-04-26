@@ -40,20 +40,31 @@ if config['EXCHANGES']['BYBIT']['ENABLED']:
 
 open_position = False
 
+@app.route('/')
+def index():
+    return "Hello, World!"
+
 @app.route('/webhook', methods=['POST'])
 def webhook():
-    data = request.json
-    print("دریافت سیگنال:", data)
+    try:
+        data = request.json
+        print("دریافت سیگنال:", data)
 
-    exchange = data['exchange'].lower()
-    if exchange in exchanges:
-        execute_trade(exchanges[exchange], data)
-    else:
-        print(f"صرافی {exchange} فعال نیست.")
+        exchange = data['exchange'].lower()
+        if exchange in exchanges:
+            execute_trade(exchanges[exchange], data)
+        else:
+            print(f"صرافی {exchange} فعال نیست.")
 
-    return {
-        'status': 'success'
-    }, 200
+        return {
+            'status': 'success'
+        }, 200
+    except Exception as e:
+        print(f"خطا در تابع webhook: {e}")
+        return {
+            'status': 'error',
+            'message': str(e)
+        }, 500
 
 def execute_trade(exchange, data):
     global open_position
@@ -77,39 +88,29 @@ def execute_trade(exchange, data):
                 balance = exchange.fetch_balance()
 
                 # محاسبه مقدار معامله بر اساس درصد موجودی
-                base_currency = symbol.split('/')[0]
-                quote_currency = symbol.split('/')[1]
-                available_balance = balance[quote_currency]['free']
-                amount = (percentage / 100) * available_balance / price
+                trade_amount = (balance['total']['USDT'] * percentage) / 100
 
-            # اجرای معامله
-            if side == 'long':
-                # خرید (long) در حالت فیوچرز
-                exchange.create_market_buy_order(symbol, amount)
-                open_position = True
-            elif side == 'short':
-                # فروش (short) در حالت فیوچرز
-                exchange.create_market_sell_order(symbol, amount)
+                # باز کردن معامله
+                open_position(exchange, symbol, side, trade_amount, price)
                 open_position = True
             else:
-                print("نوع معامله نامعتبر است.")
+                print("درصد موجودی در داده‌های دریافتی موجود نیست.")
         else:
-            print("یک معامله باز است. لطفاً ابتدا معامله فعلی را ببندید.")
+            print("معامله‌ای در حال اجرا است و قادر به باز کردن معامله جدید نیستیم.")
+
+def open_position(exchange, symbol, side, amount, price):
+    try:
+        order = exchange.create_order(symbol, 'limit', side, amount, price)
+        print(f"معامله {side} باز شد: {order}")
+    except Exception as e:
+        print(f"خطا در باز کردن معامله: {e}")
 
 def close_position(exchange, symbol, side):
-    if side == 'closelong':
-        position_side = 'long'
-    else:
-        position_side = 'short'
-
-    if exchange == exchanges['binanceusdm']:
-        exchange.private_post_position_close({
-            'symbol': exchange.market_id(symbol),
-            'positionSide': position_side,
-            'reduceOnly': True
-        })
-    else:
-        print("بستن معامله در این صرافی پشتیبانی نمی‌شود.")
+    try:
+        order = exchange.create_order(symbol, 'market', side, None)
+        print(f"معامله {side} بسته شد: {order}")
+    except Exception as e:
+        print(f"خطا در بستن معامله: {e}")
 
 if __name__ == '__main__':
-    app.run(debug=True)
+    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 8080)))
